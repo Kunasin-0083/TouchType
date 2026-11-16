@@ -1,0 +1,6 @@
+{
+  "name": "เกมฝึกพิมพ์สัมผัส ไทย-อังกฤษ (Touch Typing Tutor)",
+  "description": "เว็บไซต์เกมฝึกพิมพ์สัมผัสภาษาไทยและภาษาอังกฤษ พร้อมระบบบทเรียน แป้นเหย้า Pre-test/Post-test เกม 10 ด่าน ระบบบันทึกคะแนน Google Sheets และจัดอันดับ Leaderboard",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,14 @@
+{
+  "easy": [
+    "the", "and", "for", "are", "but", "not", "you", "all", "any", "can",
+    "had", "her", "was", "one", "our", "out", "day", "get", "has", "him"
+  ],
+  "medium": [
+    "keyboard", "typing", "finger", "touch", "speed", "accuracy",
+    "practice", "lesson", "student", "school", "learn", "future"
+  ],
+  "hard": [
+    "technology", "development", "programming", "architecture", "efficiency",
+    "intelligence", "communication", "performance", "vocabulary"
+  ]
+}
