@@ -7,30 +7,43 @@ import { TestMode } from './components/TestMode';
 import { LeaderboardView } from './components/LeaderboardView';
 import { ProfileView } from './components/ProfileView';
 import { StudentAuthView } from './components/StudentAuthView';
+import { TeacherDashboard } from './components/TeacherDashboard';
 import { AuthModal } from './components/AuthModal';
 import { AvatarSelectorModal } from './components/AvatarSelectorModal';
 import { Language, User } from './types';
 import { getCurrentUser, setCurrentUser } from './utils/googleSheets';
+import { getPosttestUnlockStatus } from './components/MedalShowcase';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 
 function MainApp() {
-  const [currentTab, setCurrentTab] = useState<string>('pretest');
+  const [user, setUser] = useState<User | null>(() => getCurrentUser());
+  const isTeacher = Boolean(user && (user.role === 'teacher' || user.role === 'admin'));
+  const isAuthenticated = Boolean(user && (user.studentId || isTeacher) && user.username !== 'guest');
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    const u = getCurrentUser();
+    if (!u) return 'auth';
+    return u.role === 'teacher' || u.role === 'admin' ? 'teacher' : 'pretest';
+  });
   const [language, setLanguage] = useState<Language>('th');
-  const [user, setUser] = useState<User | null>(null);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
   const { isDark } = useTheme();
 
   useEffect(() => {
     const loggedUser = getCurrentUser();
-    if (loggedUser) {
+    const isTeacherSession = Boolean(loggedUser && (loggedUser.role === 'teacher' || loggedUser.role === 'admin'));
+    if (loggedUser && (loggedUser.studentId || isTeacherSession)) {
       setUser(loggedUser);
+    } else {
+      setUser(null);
+      setCurrentTab('auth');
     }
   }, []);
 
   const handleLogout = () => {
     setCurrentUser(null);
     setUser(null);
+    setCurrentTab('auth');
   };
 
   return (
@@ -42,7 +55,17 @@ function MainApp() {
       {/* Top Navigation */}
       <Navbar
         currentTab={currentTab}
-        onTabChange={setCurrentTab}
+        onTabChange={(tab) => {
+          if (!isAuthenticated) {
+            setCurrentTab('auth');
+            return;
+          }
+          if (isTeacher) {
+            setCurrentTab('teacher');
+            return;
+          }
+          setCurrentTab(tab);
+        }}
         language={language}
         onLanguageChange={setLanguage}
         user={user}
@@ -53,20 +76,32 @@ function MainApp() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        {/* หน้าสมัครสมาชิกและเข้าสู่ระบบด้วยรหัสนักเรียน */}
-        {currentTab === 'auth' && (
+        {/* บังคับเข้าสู่ระบบเป็นอันดับแรกเมื่อเข้าเว็บไซต์ หรือเมื่อเปิดหน้า auth */}
+        {(!isAuthenticated || currentTab === 'auth') && (
           <StudentAuthView
             currentUser={user}
             onAuthSuccess={(newUser) => {
               setUser(newUser);
-              setCurrentTab('profile');
+              if (newUser.role === 'teacher' || newUser.role === 'admin') {
+                setCurrentTab('teacher');
+                return;
+              }
+              const status = getPosttestUnlockStatus(newUser);
+              setCurrentTab(status.hasPretest ? 'profile' : 'pretest');
             }}
-            onNavigateHome={() => setCurrentTab('pretest')}
+            onNavigateHome={() =>
+              setCurrentTab(isAuthenticated ? (isTeacher ? 'teacher' : 'pretest') : 'auth')
+            }
           />
         )}
 
+        {/* แดชบอร์ดสำหรับครูผู้สอน (หน้าครูแสดงเฉพาะแดชบอร์ดครู) */}
+        {isAuthenticated && isTeacher && currentTab !== 'auth' && (
+          <TeacherDashboard currentUser={user} />
+        )}
+
         {/* 1. Pretest (แบบทดสอบก่อนเรียน) */}
-        {currentTab === 'pretest' && (
+        {isAuthenticated && !isTeacher && currentTab === 'pretest' && (
           <TestMode
             language={language}
             user={user}
@@ -77,12 +112,12 @@ function MainApp() {
         )}
 
         {/* 2. ศูนย์การเรียนรู้ (Lessons) */}
-        {currentTab === 'lessons' && (
+        {isAuthenticated && !isTeacher && currentTab === 'lessons' && (
           <LessonsMode language={language} user={user} />
         )}
 
         {/* 3. โหมดเกม 10 ด่าน (10 Game Levels) */}
-        {currentTab === 'game' && (
+        {isAuthenticated && !isTeacher && currentTab === 'game' && (
           <GameMode
             language={language}
             user={user}
@@ -91,7 +126,7 @@ function MainApp() {
         )}
 
         {/* 4. ประลองจัดอันดับ (Ranked Arena) */}
-        {currentTab === 'ranked' && (
+        {isAuthenticated && !isTeacher && currentTab === 'ranked' && (
           <RankedMode
             language={language}
             user={user}
@@ -101,7 +136,7 @@ function MainApp() {
         )}
 
         {/* 5. Posttest (แบบทดสอบหลังเรียน) */}
-        {currentTab === 'posttest' && (
+        {isAuthenticated && !isTeacher && currentTab === 'posttest' && (
           <TestMode
             language={language}
             user={user}
@@ -112,7 +147,7 @@ function MainApp() {
         )}
 
         {/* 6. ตารางอันดับ (Leaderboard) */}
-        {currentTab === 'leaderboard' && (
+        {isAuthenticated && !isTeacher && currentTab === 'leaderboard' && (
           <LeaderboardView
             currentLanguage={language}
             user={user}
@@ -122,7 +157,7 @@ function MainApp() {
         )}
 
         {/* 7. โปรไฟล์ (Profile) */}
-        {currentTab === 'profile' && (
+        {isAuthenticated && !isTeacher && currentTab === 'profile' && (
           <ProfileView
             user={user}
             onOpenAuth={() => setCurrentTab('auth')}

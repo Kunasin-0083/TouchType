@@ -15,12 +15,14 @@ import {
   Sparkles,
   Award,
   Lock,
-  Keyboard
+  Keyboard,
+  LayoutDashboard
 } from 'lucide-react';
 import { Language, User } from '../types';
 import { soundManager } from '../utils/audio';
 import { useTheme } from '../context/ThemeContext';
 import { UserAvatar } from './UserAvatar';
+import { getPosttestUnlockStatus } from './MedalShowcase';
 
 interface NavbarProps {
   currentTab: string;
@@ -77,96 +79,106 @@ export const Navbar: React.FC<NavbarProps> = ({
     }
   }, [currentTab]);
 
-  const isPosttestLocked = React.useMemo(() => {
-    try {
-      const pretestQuiz = localStorage.getItem('touch_typing_pretest_quiz_v2');
-      const hasPretest = Boolean(pretestQuiz);
-      const unlockedLevel = parseInt(localStorage.getItem('touch_typing_unlocked_level') || '1', 10);
-      const hasLearned = unlockedLevel > 1 || Boolean(localStorage.getItem('touch_typing_learned_lesson'));
-      return !(hasPretest && hasLearned);
-    } catch {
-      return true;
-    }
-  }, [currentTab]);
+  const isTeacher = Boolean(user && (user.role === 'teacher' || user.role === 'admin'));
+  const isAuthenticated = Boolean(user && (user.studentId || isTeacher) && user.username !== 'guest');
 
-  const navItems: NavItemConfig[] = [
-    {
-      id: 'pretest',
-      labelTh: 'Pre-test',
-      compactTh: 'ก่อนเรียน',
-      labelEn: 'Pre-test',
-      tooltipTh: 'แบบทดสอบก่อนเรียน (Pre-test)',
-      tooltipEn: 'Pre-test Assessment',
-      icon: ClipboardCheck,
-      group: 'learn'
-    },
-    {
-      id: 'lessons',
-      labelTh: 'ศูนย์การเรียนรู้',
-      compactTh: 'บทเรียน',
-      labelEn: 'Lessons',
-      tooltipTh: 'ศูนย์การเรียนรู้ & ฝึกพิมพ์สัมผัส',
-      tooltipEn: 'Touch Typing Learning Center',
-      icon: BookOpen,
-      group: 'learn'
-    },
-    {
-      id: 'game',
-      labelTh: 'เกม 10 ด่าน',
-      compactTh: '10 ด่าน',
-      labelEn: '10 Levels',
-      tooltipTh: 'โหมดเกมฝึกพิมพ์ 10 ด่าน',
-      tooltipEn: '10-Level Adventure Game',
-      icon: Gamepad2,
-      group: 'learn'
-    },
-    {
-      id: 'ranked',
-      labelTh: 'ประลองจัดอันดับ',
-      compactTh: 'ประลอง',
-      labelEn: 'Ranked',
-      tooltipTh: 'โหมดประลองจัดอันดับ (Ranked Arena)',
-      tooltipEn: 'Ranked Competitive Arena',
-      icon: Flame,
-      isRanked: true,
-      group: 'learn'
-    },
-    {
-      id: 'posttest',
-      labelTh: 'Post-test',
-      compactTh: 'หลังเรียน',
-      labelEn: 'Post-test',
-      tooltipTh: isPosttestLocked
-        ? 'แบบทดสอบหลังเรียน (ปลดล็อกเมื่อทำ Pre-test และฝึกศูนย์การเรียนรู้)'
-        : 'แบบทดสอบหลังเรียน (Post-test)',
-      tooltipEn: isPosttestLocked
-        ? 'Post-test (Complete Pre-test & Lessons to unlock)'
-        : 'Post-test Assessment',
-      icon: Award,
-      isLocked: isPosttestLocked,
-      group: 'learn'
-    },
-    {
-      id: 'leaderboard',
-      labelTh: 'ตารางอันดับ',
-      compactTh: 'อันดับ',
-      labelEn: 'Ranks',
-      tooltipTh: 'สกอร์บอร์ดรวม (Leaderboard)',
-      tooltipEn: 'Global Leaderboard',
-      icon: Trophy,
-      group: 'social'
-    },
-    {
-      id: 'profile',
-      labelTh: 'โปรไฟล์',
-      compactTh: 'โปรไฟล์',
-      labelEn: 'Profile',
-      tooltipTh: 'โปรไฟล์ สถิติ และเหรียญตรา',
-      tooltipEn: 'Profile, Stats & Badges',
-      icon: UserIcon,
-      group: 'social'
-    }
-  ];
+  const posttestStatus = React.useMemo(
+    () => getPosttestUnlockStatus(user),
+    [currentTab, user]
+  );
+  const isPosttestLocked = !posttestStatus.isUnlocked;
+
+  const navItems: NavItemConfig[] = isTeacher
+    ? [
+        {
+          id: 'teacher',
+          labelTh: 'แดชบอร์ดครู',
+          compactTh: 'แดชบอร์ดครู',
+          labelEn: 'Teacher Dashboard',
+          tooltipTh: 'แดชบอร์ดติดตามผลและข้อมูลนักเรียน',
+          tooltipEn: 'Teacher Analytics Dashboard',
+          icon: LayoutDashboard,
+          group: 'social'
+        }
+      ]
+    : [
+        {
+          id: 'pretest',
+          labelTh: 'Pre-test',
+          compactTh: 'ก่อนเรียน',
+          labelEn: 'Pre-test',
+          tooltipTh: 'แบบทดสอบก่อนเรียน (Pre-test)',
+          tooltipEn: 'Pre-test Assessment',
+          icon: ClipboardCheck,
+          group: 'learn'
+        },
+        {
+          id: 'lessons',
+          labelTh: 'ศูนย์การเรียนรู้',
+          compactTh: 'บทเรียน',
+          labelEn: 'Lessons',
+          tooltipTh: 'ศูนย์การเรียนรู้ & ฝึกพิมพ์สัมผัส',
+          tooltipEn: 'Touch Typing Learning Center',
+          icon: BookOpen,
+          group: 'learn'
+        },
+        {
+          id: 'game',
+          labelTh: 'เกม 10 ด่าน',
+          compactTh: '10 ด่าน',
+          labelEn: '10 Levels',
+          tooltipTh: 'โหมดเกมฝึกพิมพ์ 10 ด่าน',
+          tooltipEn: '10-Level Adventure Game',
+          icon: Gamepad2,
+          group: 'learn'
+        },
+        {
+          id: 'ranked',
+          labelTh: 'ประลองจัดอันดับ',
+          compactTh: 'ประลอง',
+          labelEn: 'Ranked',
+          tooltipTh: 'โหมดประลองจัดอันดับ (Ranked Arena)',
+          tooltipEn: 'Ranked Competitive Arena',
+          icon: Flame,
+          isRanked: true,
+          group: 'learn'
+        },
+        {
+          id: 'posttest',
+          labelTh: 'Post-test',
+          compactTh: 'หลังเรียน',
+          labelEn: 'Post-test',
+          tooltipTh: isPosttestLocked
+            ? `แบบทดสอบหลังเรียน (ล็อค: ต้องทำ Pre-test, ศูนย์การเรียนรู้ และผ่านเกมครบทั้ง 10 ด่าน — ตอนนี้ ${posttestStatus.passedLevelsCount}/10 ด่าน)`
+            : 'แบบทดสอบหลังเรียน (Post-test)',
+          tooltipEn: isPosttestLocked
+            ? `Post-test (Locked: Complete Pre-test, Lessons & all 10 Levels — ${posttestStatus.passedLevelsCount}/10)`
+            : 'Post-test Assessment',
+          icon: Award,
+          isLocked: isPosttestLocked,
+          group: 'learn'
+        },
+        {
+          id: 'leaderboard',
+          labelTh: 'ตารางอันดับ',
+          compactTh: 'อันดับ',
+          labelEn: 'Ranks',
+          tooltipTh: 'สกอร์บอร์ดรวม (Leaderboard)',
+          tooltipEn: 'Global Leaderboard',
+          icon: Trophy,
+          group: 'social'
+        },
+        {
+          id: 'profile',
+          labelTh: 'โปรไฟล์',
+          compactTh: 'โปรไฟล์',
+          labelEn: 'Profile',
+          tooltipTh: 'โปรไฟล์ สถิติ และเหรียญตรา',
+          tooltipEn: 'Profile, Stats & Badges',
+          icon: UserIcon,
+          group: 'social'
+        }
+      ];
 
   const learnItems = navItems.filter(i => i.group === 'learn');
   const socialItems = navItems.filter(i => i.group === 'social');
@@ -220,7 +232,9 @@ export const Navbar: React.FC<NavbarProps> = ({
         onClick={() => onTabChange(item.id)}
         title={language === 'th' ? item.tooltipTh : item.tooltipEn}
         aria-current={isActive ? 'page' : undefined}
-        className={`group/nav relative flex items-center gap-1.5 px-2.5 xl:px-3 h-9 rounded-xl text-[13px] whitespace-nowrap shrink-0 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${buttonStyle}`}
+        className={`group/nav relative flex items-center gap-1.5 ${
+          isTeacher ? 'px-2 xl:px-2.5' : 'px-2.5 xl:px-3'
+        } h-9 rounded-xl text-[13px] whitespace-nowrap shrink-0 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${buttonStyle}`}
       >
         <Icon className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 group-hover/nav:scale-110 ${iconColor}`} />
         <span className="hidden xl:inline">
@@ -265,7 +279,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Brand Lockup — Tactile Keycap Emblem */}
           <button
             type="button"
-            onClick={() => onTabChange('pretest')}
+            onClick={() => onTabChange(isAuthenticated ? (isTeacher ? 'teacher' : 'pretest') : 'auth')}
             className="flex items-center gap-2.5 text-left cursor-pointer group shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 rounded-xl pr-1"
           >
             <div
@@ -297,25 +311,29 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           {/* Desktop Navigation Dock */}
-          <nav
-            aria-label="Primary Navigation"
-            className={`hidden lg:flex items-center gap-1 p-1 rounded-2xl border transition-colors ${
-              isDark
-                ? 'bg-slate-900/75 border-slate-800/90 shadow-inner shadow-slate-950/60'
-                : 'bg-slate-100/85 border-slate-200/90 shadow-inner shadow-slate-200/50'
-            }`}
-          >
-            {learnItems.map(renderDesktopButton)}
-
-            <div
-              className={`w-px h-5 mx-0.5 shrink-0 ${
-                isDark ? 'bg-slate-700/80' : 'bg-slate-300/80'
+          {isAuthenticated && (
+            <nav
+              aria-label="Primary Navigation"
+              className={`hidden lg:flex items-center gap-1 p-1 rounded-2xl border transition-colors ${
+                isDark
+                  ? 'bg-slate-900/75 border-slate-800/90 shadow-inner shadow-slate-950/60'
+                  : 'bg-slate-100/85 border-slate-200/90 shadow-inner shadow-slate-200/50'
               }`}
-              aria-hidden="true"
-            />
+            >
+              {learnItems.map(renderDesktopButton)}
 
-            {socialItems.map(renderDesktopButton)}
-          </nav>
+              {learnItems.length > 0 && socialItems.length > 0 && (
+                <div
+                  className={`w-px h-5 mx-0.5 shrink-0 ${
+                    isDark ? 'bg-slate-700/80' : 'bg-slate-300/80'
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
+
+              {socialItems.map(renderDesktopButton)}
+            </nav>
+          )}
 
           {/* Right Utility Controls & Account Cluster */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
@@ -399,8 +417,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
             </button>
 
-            {/* Student Profile Chip / Login CTA */}
-            {user && user.studentId ? (
+            {/* Student / Teacher Profile Chip / Login CTA */}
+            {user && (user.studentId || isTeacher) ? (
               <div
                 className={`flex items-center gap-2 h-10 pl-1.5 pr-1.5 rounded-xl border transition-all ${
                   isDark
@@ -426,11 +444,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </div>
                 </button>
 
-                {/* Student Name & ID */}
+                {/* Student / Teacher Name & ID */}
                 <button
                   type="button"
-                  onClick={() => onTabChange('profile')}
-                  title="ดูข้อมูลบัตรนักเรียนและสถิติ"
+                  onClick={() => onTabChange(isTeacher ? 'teacher' : 'profile')}
+                  title={isTeacher ? 'แดชบอร์ดครูผู้สอน' : 'ดูข้อมูลบัตรนักเรียนและสถิติ'}
                   className="cursor-pointer max-w-[116px] hidden sm:block text-left group/user focus-visible:outline-none"
                 >
                   <div
@@ -445,7 +463,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       isDark ? 'text-cyan-400' : 'text-cyan-600'
                     }`}
                   >
-                    {user.studentId}
+                    {user.studentId || (isTeacher ? 'TEACHER' : '')}
                   </div>
                 </button>
 
@@ -482,69 +500,71 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Tablet & Mobile Horizontal Navigation Dock */}
-        <nav
-          aria-label="Mobile Navigation"
-          className={`lg:hidden flex items-center gap-1.5 overflow-x-auto py-2 border-t no-scrollbar ${
-            isDark ? 'border-slate-800/70' : 'border-slate-200/80'
-          }`}
-        >
-          {navItems.map(item => {
-            const Icon = item.icon;
-            const isActive = currentTab === item.id;
-            const isRanked = Boolean(item.isRanked);
+        {/* Tablet & Mobile Horizontal Navigation Dock (students only; teachers stay on Teacher Dashboard) */}
+        {isAuthenticated && !isTeacher && (
+          <nav
+            aria-label="Mobile Navigation"
+            className={`lg:hidden flex items-center gap-1.5 overflow-x-auto py-2 border-t no-scrollbar ${
+              isDark ? 'border-slate-800/70' : 'border-slate-200/80'
+            }`}
+          >
+            {navItems.map(item => {
+              const Icon = item.icon;
+              const isActive = currentTab === item.id;
+              const isRanked = Boolean(item.isRanked);
 
-            return (
-              <button
-                key={item.id}
-                ref={el => {
-                  mobileTabRefs.current[item.id] = el;
-                }}
-                type="button"
-                onClick={() => onTabChange(item.id)}
-                className={`relative flex items-center gap-1.5 px-3 min-h-[34px] rounded-xl text-xs whitespace-nowrap shrink-0 font-medium transition-all duration-200 ${
-                  isActive
-                    ? isRanked
+              return (
+                <button
+                  key={item.id}
+                  ref={el => {
+                    mobileTabRefs.current[item.id] = el;
+                  }}
+                  type="button"
+                  onClick={() => onTabChange(item.id)}
+                  className={`relative flex items-center gap-1.5 px-3 min-h-[34px] rounded-xl text-xs whitespace-nowrap shrink-0 font-medium transition-all duration-200 ${
+                    isActive
+                      ? isRanked
+                        ? isDark
+                          ? 'bg-amber-500/20 text-amber-200 border border-amber-400/45 shadow-sm shadow-amber-500/20 font-semibold'
+                          : 'bg-amber-100 text-amber-900 border border-amber-300 font-semibold shadow-xs'
+                        : isDark
+                        ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-sm shadow-cyan-500/15 font-semibold'
+                        : 'bg-cyan-50 text-cyan-800 border border-cyan-300 font-semibold shadow-xs'
+                      : isRanked
                       ? isDark
-                        ? 'bg-amber-500/20 text-amber-200 border border-amber-400/45 shadow-sm shadow-amber-500/20 font-semibold'
-                        : 'bg-amber-100 text-amber-900 border border-amber-300 font-semibold shadow-xs'
+                        ? 'text-amber-300 bg-amber-950/35 hover:bg-amber-900/40 border border-amber-800/50'
+                        : 'text-amber-800 bg-amber-50/90 hover:bg-amber-100 border border-amber-200'
                       : isDark
-                      ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-sm shadow-cyan-500/15 font-semibold'
-                      : 'bg-cyan-50 text-cyan-800 border border-cyan-300 font-semibold shadow-xs'
-                    : isRanked
-                    ? isDark
-                      ? 'text-amber-300 bg-amber-950/35 hover:bg-amber-900/40 border border-amber-800/50'
-                      : 'text-amber-800 bg-amber-50/90 hover:bg-amber-100 border border-amber-200'
-                    : isDark
-                    ? 'text-slate-300 hover:text-white bg-slate-900/70 border border-slate-800/80'
-                    : 'text-slate-600 hover:text-slate-900 bg-slate-100/90 border border-slate-200/80'
-                }`}
-              >
-                <Icon
-                  className={`w-3.5 h-3.5 shrink-0 ${
-                    isRanked
-                      ? isDark
-                        ? 'text-amber-400'
-                        : 'text-amber-600'
-                      : isActive
-                      ? isDark
-                        ? 'text-cyan-300'
-                        : 'text-cyan-600'
-                      : ''
+                      ? 'text-slate-300 hover:text-white bg-slate-900/70 border border-slate-800/80'
+                      : 'text-slate-600 hover:text-slate-900 bg-slate-100/90 border border-slate-200/80'
                   }`}
-                />
-                <span>{language === 'th' ? item.labelTh : item.labelEn}</span>
-                {item.isLocked && (
-                  <Lock
-                    className={`w-3 h-3 shrink-0 ${
-                      isDark ? 'text-amber-400' : 'text-amber-600'
+                >
+                  <Icon
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      isRanked
+                        ? isDark
+                          ? 'text-amber-400'
+                          : 'text-amber-600'
+                        : isActive
+                        ? isDark
+                          ? 'text-cyan-300'
+                          : 'text-cyan-600'
+                        : ''
                     }`}
                   />
-                )}
-              </button>
-            );
-          })}
-        </nav>
+                  <span>{language === 'th' ? item.labelTh : item.labelEn}</span>
+                  {item.isLocked && (
+                    <Lock
+                      className={`w-3 h-3 shrink-0 ${
+                        isDark ? 'text-amber-400' : 'text-amber-600'
+                      }`}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        )}
       </div>
     </header>
   );

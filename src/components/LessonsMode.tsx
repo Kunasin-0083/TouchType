@@ -1,11 +1,13 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   BookOpen,
   CheckCircle,
   ArrowRight,
   Lightbulb,
   Sparkles,
-  Crosshair
+  Crosshair,
+  CornerDownLeft,
+  Keyboard
 } from 'lucide-react';
 import { Language, LessonConfig, ScoreRecord, User } from '../types';
 import { LESSONS_DATA } from '../data/lessons';
@@ -31,12 +33,12 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
   const currentLesson: LessonConfig = LESSONS_DATA[selectedLessonIndex];
   const practiceList = language === 'th' ? currentLesson.practiceTextTh : currentLesson.practiceTextEn;
   const currentPracticeText = practiceList[practiceIndex] || practiceList[0];
+  const targetKeys = language === 'th' ? currentLesson.keysTh : currentLesson.keysEn;
 
-  React.useEffect(() => {
-    try {
-      localStorage.setItem('touch_typing_learned_lesson', 'true');
-    } catch {}
-  }, []);
+  const hasMoreDrillsInLesson = practiceIndex < practiceList.length - 1;
+  const hasNextLesson = selectedLessonIndex < LESSONS_DATA.length - 1;
+  const canAdvance = hasMoreDrillsInLesson || hasNextLesson;
+  const nextLesson = hasNextLesson ? LESSONS_DATA[selectedLessonIndex + 1] : null;
 
   // Smoothly scroll so TypingArea + VirtualKeyboard sit centered in the viewport
   const centerPracticeWorkspace = useCallback(() => {
@@ -104,7 +106,7 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
     saveLocalScore(record);
   };
 
-  const handleNextDrill = () => {
+  const handleNextDrill = useCallback(() => {
     if (practiceIndex < practiceList.length - 1) {
       setPracticeIndex(prev => prev + 1);
       setDrillCompleted(false);
@@ -116,7 +118,29 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
     setTimeout(() => {
       centerPracticeWorkspace();
     }, 60);
-  };
+  }, [practiceIndex, practiceList.length, selectedLessonIndex, centerPracticeWorkspace]);
+
+  // Allow pressing Enter immediately after finishing a drill/lesson to jump to the next drill or lesson
+  useEffect(() => {
+    if (!drillCompleted || !canAdvance) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleNextDrill();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [drillCompleted, canAdvance, handleNextDrill]);
+
+  const enterHintText = hasMoreDrillsInLesson
+    ? `ฝึกชุดที่ ${practiceIndex + 1} สำเร็จแล้ว! กด Enter ↵ เพื่อไปแบบฝึกหัดถัดไป`
+    : nextLesson
+    ? `จบบทที่ ${currentLesson.id} แล้ว! กด Enter ↵ เพื่อไปบทที่ ${nextLesson.id}${nextLesson.shortTitle ? ` (${nextLesson.shortTitle})` : ''} ได้เลย`
+    : 'ยินดีด้วย! คุณฝึกครบทุกบทเรียนในศูนย์การเรียนรู้แล้ว';
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -128,7 +152,7 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
             : 'bg-white border-slate-200/90 shadow-slate-200/50'
         }`}
       >
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+        <div className="flex flex-col gap-4 mb-6">
           <div>
             <div
               className={`flex items-center gap-2 text-xs font-semibold uppercase tracking-wider mb-1 ${
@@ -147,21 +171,52 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
           </div>
 
           {/* Quick Lesson Switcher buttons */}
-          <div className="flex items-center gap-1.5 overflow-x-auto py-1">
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
             {LESSONS_DATA.map((lesson, idx) => (
               <button
                 key={lesson.id}
+                type="button"
                 onClick={() => handleLessonChange(idx)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
                   selectedLessonIndex === idx
-                    ? 'bg-cyan-600 text-white shadow-md shadow-cyan-500/20'
+                    ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md shadow-cyan-500/20'
                     : isDark
-                    ? 'bg-slate-800 text-slate-300 hover:bg-slate-750'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700/70'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
                 }`}
               >
-                บทที่ {lesson.id}
+                บทที่ {lesson.id}{lesson.shortTitle ? ` · ${lesson.shortTitle}` : ''}
               </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Target Keys Strip */}
+        <div
+          className={`mb-5 px-4 py-3 rounded-2xl border flex flex-wrap items-center justify-between gap-3 ${
+            isDark
+              ? 'bg-slate-950/60 border-slate-800/80'
+              : 'bg-cyan-50/50 border-cyan-200/70'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-xs font-bold">
+            <Keyboard className={`w-4 h-4 ${isDark ? 'text-cyan-400' : 'text-cyan-600'}`} />
+            <span className={isDark ? 'text-slate-300' : 'text-slate-700'}>
+              {currentLesson.fingerFocus}:
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {targetKeys.map((k, idx) => (
+              <span
+                key={`${k}-${idx}`}
+                className={`inline-flex items-center justify-center min-w-7 h-7 px-2 rounded-lg font-mono text-xs font-bold border shadow-2xs ${
+                  isDark
+                    ? 'bg-slate-900 border-slate-700 text-cyan-300'
+                    : 'bg-white border-slate-300 text-cyan-700'
+                }`}
+              >
+                {k}
+              </span>
             ))}
           </div>
         </div>
@@ -227,9 +282,40 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
       {/* Interactive Practice Exercise Area (Centered together with VirtualKeyboard) */}
       <div ref={practiceWorkspaceRef} className="space-y-3 scroll-mt-20">
         <div className="flex flex-wrap items-center justify-between gap-2 px-2 max-w-5xl mx-auto">
-          <div className={`flex items-center gap-2 text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>
-            <span className="w-2.5 h-2.5 rounded-full bg-cyan-500 animate-ping" />
-            <span>แบบฝึกหัดที่ {practiceIndex + 1} จาก {practiceList.length}</span>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className={`flex items-center gap-2 text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>
+              <span className="w-2.5 h-2.5 rounded-full bg-cyan-500 animate-ping" />
+              <span>
+                {practiceList.length > 1
+                  ? `แบบฝึกหัดที่ ${practiceIndex + 1} จาก ${practiceList.length}`
+                  : `แบบฝึกหัดประจำบทที่ ${currentLesson.id}`}
+              </span>
+            </div>
+
+            {/* Drill selector pills inside current lesson (only if > 1 set) */}
+            {practiceList.length > 1 && (
+              <div className="flex items-center gap-1">
+                {practiceList.map((_, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setPracticeIndex(idx);
+                      setDrillCompleted(false);
+                    }}
+                    className={`px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all ${
+                      practiceIndex === idx
+                        ? 'bg-cyan-600 text-white shadow-xs'
+                        : isDark
+                        ? 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                        : 'bg-slate-200/80 text-slate-600 hover:bg-slate-300'
+                    }`}
+                  >
+                    ชุด {idx + 1}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -246,37 +332,78 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
               <span>จัดกึ่งกลางหน้าจอ</span>
             </button>
 
-            {drillCompleted && (
-              <span
-                className={`text-xs px-2.5 py-1 rounded-full border font-semibold flex items-center gap-1 ${
-                  isDark
-                    ? 'bg-emerald-950 border-emerald-800 text-emerald-300'
-                    : 'bg-emerald-50 border-emerald-300 text-emerald-700'
+            {hasMoreDrillsInLesson ? (
+              <button
+                type="button"
+                onClick={handleNextDrill}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold shadow-md transition-all ${
+                  drillCompleted
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white ring-2 ring-emerald-400/50 animate-pulse'
+                    : 'bg-cyan-600 hover:bg-cyan-500 text-white'
                 }`}
               >
-                <CheckCircle className="w-3.5 h-3.5" />
-                ฝึกสำเร็จ! รับเหรียญศูนย์การเรียนรู้แล้ว
-              </span>
-            )}
-            {practiceIndex < practiceList.length - 1 ? (
-              <button
-                onClick={handleNextDrill}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold shadow-md transition-all"
-              >
                 <span>แบบฝึกหัดถัดไป</span>
+                {drillCompleted && (
+                  <kbd className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-black/20 border border-white/25 inline-flex items-center gap-0.5">
+                    Enter <CornerDownLeft className="w-2.5 h-2.5" />
+                  </kbd>
+                )}
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
-            ) : selectedLessonIndex < LESSONS_DATA.length - 1 ? (
+            ) : nextLesson ? (
               <button
+                type="button"
                 onClick={handleNextDrill}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-semibold shadow-md transition-all"
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold shadow-md transition-all ${
+                  drillCompleted
+                    ? 'bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white ring-2 ring-emerald-400/50 animate-pulse'
+                    : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white'
+                }`}
               >
-                <span>ไปบทที่ {selectedLessonIndex + 2}</span>
+                <span>ไปบทที่ {nextLesson.id}</span>
+                {drillCompleted && (
+                  <kbd className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-black/20 border border-white/25 inline-flex items-center gap-0.5">
+                    Enter <CornerDownLeft className="w-2.5 h-2.5" />
+                  </kbd>
+                )}
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             ) : null}
           </div>
         </div>
+
+        {/* Completion Banner with Enter Key Hint */}
+        {drillCompleted && (
+          <div
+            className={`max-w-5xl mx-auto px-4 py-3 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-all ${
+              isDark
+                ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
+                : 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-xs'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 text-xs sm:text-sm font-bold">
+              <CheckCircle className="w-5 h-5 text-emerald-500 shrink-0" />
+              <span>{enterHintText}</span>
+            </div>
+
+            {canAdvance && (
+              <button
+                type="button"
+                onClick={handleNextDrill}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-sm transition-all shrink-0"
+              >
+                <span>
+                  {hasMoreDrillsInLesson
+                    ? 'ไปแบบฝึกหัดถัดไป'
+                    : `ไปบทที่ ${nextLesson?.id}`}
+                </span>
+                <kbd className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-black/20 border border-white/25 inline-flex items-center gap-0.5">
+                  Enter <CornerDownLeft className="w-2.5 h-2.5" />
+                </kbd>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Practice Typing Area */}
         <TypingArea
@@ -284,6 +411,7 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
           targetText={currentPracticeText}
           language={language}
           compact
+          completionHint={canAdvance ? enterHintText : 'ฝึกครบทุกบทเรียนในศูนย์การเรียนรู้แล้ว!'}
           onInteract={centerPracticeWorkspace}
           onTargetCharChange={setCurrentTargetChar}
           onKeyPressed={setPressedKey}

@@ -25,6 +25,8 @@ interface TypingAreaProps {
   onRestart?: () => void;
   onInteract?: () => void;
   compact?: boolean;
+  completionHint?: string;
+  allowBackspace?: boolean;
 }
 
 export const TypingArea: React.FC<TypingAreaProps> = ({
@@ -36,7 +38,9 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
   onKeyPressed,
   onRestart,
   onInteract,
-  compact = false
+  compact = false,
+  completionHint,
+  allowBackspace = true
 }) => {
   const [typedText, setTypedText] = useState('');
   const [startTime, setStartTime] = useState<number | null>(null);
@@ -45,6 +49,8 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
   const [isFinished, setIsFinished] = useState(false);
   const [combo, setCombo] = useState(0);
   const { isDark } = useTheme();
+
+  const typedTextRef = useRef('');
 
   const inputRef = useRef<HTMLInputElement>(null);
   const textDisplayRef = useRef<HTMLDivElement>(null);
@@ -89,13 +95,14 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
   }, [isActive, isFinished, timeLimitSeconds]);
 
   // Handle completion
-  const handleFinish = (finalElapsed?: number) => {
+  const handleFinish = (finalElapsed?: number, overrideTypedText?: string) => {
     if (isFinished) return;
     setIsFinished(true);
     setIsActive(false);
 
     const seconds = finalElapsed !== undefined ? finalElapsed : Math.max(elapsedSeconds, 1);
-    const metrics = calculateTypingMetrics(targetText, typedText, seconds, language);
+    const finalText = overrideTypedText !== undefined ? overrideTypedText : typedTextRef.current;
+    const metrics = calculateTypingMetrics(targetText, finalText, seconds, language);
     onComplete({
       ...metrics,
       timeTakenSeconds: seconds
@@ -104,6 +111,7 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
 
   // Reset drill
   const handleReset = () => {
+    typedTextRef.current = '';
     setTypedText('');
     setStartTime(null);
     setElapsedSeconds(0);
@@ -115,12 +123,33 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
     onRestart?.();
   };
 
+  const keepCaretAtEnd = (el: HTMLInputElement) => {
+    if (allowBackspace) return;
+    const len = el.value.length;
+    if (el.selectionStart !== len || el.selectionEnd !== len) {
+      try {
+        el.setSelectionRange(len, len);
+      } catch {
+        // ignore if element does not support selection range
+      }
+    }
+  };
+
   // Handle typing input
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isFinished) return;
 
     const rawVal = e.target.value;
     const val = rawVal.normalize('NFC');
+
+    // Enforce no-backspace / no-editing when allowBackspace is false
+    if (!allowBackspace) {
+      if (val.length <= typedTextRef.current.length || !val.startsWith(typedTextRef.current)) {
+        keepCaretAtEnd(e.target);
+        return;
+      }
+    }
+
     if (!startTime && val.length > 0) {
       setStartTime(Date.now());
       setIsActive(true);
@@ -155,20 +184,42 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
       setCombo(0);
     }
 
+    typedTextRef.current = val;
     setTypedText(val);
 
     // If reached end of target text
     if (val.length >= cleanTargetText.length) {
-      handleFinish();
+      handleFinish(undefined, val);
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     onKeyPressed?.(e.code);
+
+    if (!allowBackspace) {
+      const blockedKeys = [
+        'Backspace',
+        'Delete',
+        'ArrowLeft',
+        'ArrowRight',
+        'ArrowUp',
+        'ArrowDown',
+        'Home',
+        'End'
+      ];
+      if (blockedKeys.includes(e.key)) {
+        e.preventDefault();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && ['a', 'x', 'v', 'z', 'y', 'backspace', 'delete'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+      }
+    }
   };
 
-  const handleKeyUp = () => {
+  const handleKeyUp = (e: React.KeyboardEvent<HTMLInputElement>) => {
     onKeyPressed?.(null);
+    keepCaretAtEnd(e.currentTarget);
   };
 
   // Live metrics calculations
@@ -319,7 +370,7 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
             title="เริ่มใหม่ (Restart)"
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
               isDark
-                ? 'bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border-slate-700'
+                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border-slate-700'
                 : 'bg-white hover:bg-slate-100 text-slate-700 hover:text-slate-900 border-slate-300 shadow-xs'
             }`}
           >
@@ -429,7 +480,11 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
-        onFocus={() => onInteract?.()}
+        onSelect={(e) => keepCaretAtEnd(e.currentTarget)}
+        onFocus={(e) => {
+          keepCaretAtEnd(e.currentTarget);
+          onInteract?.();
+        }}
         disabled={isFinished}
         className="absolute opacity-0 top-1/2 left-1/2 w-px h-px pointer-events-none"
         autoComplete="off"
@@ -444,9 +499,24 @@ export const TypingArea: React.FC<TypingAreaProps> = ({
           isDark ? 'text-slate-400' : 'text-slate-500'
         }`}
       >
-        <div className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-cyan-500 animate-ping"></span>
-          <span>คลิกที่กล่องเพื่อเริ่มพิมพ์ได้ทันที หรือกดแป้นพิมพ์บนคีย์บอร์ด</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          {isFinished && completionHint ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className={`font-semibold ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>
+                {completionHint}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="w-2 h-2 rounded-full bg-cyan-500 animate-ping" />
+              <span>
+                {allowBackspace
+                  ? 'คลิกที่กล่องเพื่อเริ่มพิมพ์ได้ทันที หรือกดแป้นพิมพ์บนคีย์บอร์ด'
+                  : 'พิมพ์ผิดไม่สามารถลบแก้ไขย้อนหลังได้ • คลิกที่กล่องเพื่อพิมพ์ต่อ'}
+              </span>
+            </>
+          )}
         </div>
         <div>
           ความคืบหน้า: <strong className={isDark ? 'text-cyan-300' : 'text-cyan-600'}>{typedText.length}</strong> / {targetText.length} อักขระ ({progressPercent}%)

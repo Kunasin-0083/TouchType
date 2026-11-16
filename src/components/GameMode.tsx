@@ -3,14 +3,16 @@ import {
   ArrowRight,
   Star,
   ChevronLeft,
-  Sparkles
+  Sparkles,
+  CheckCircle2,
+  Lock
 } from 'lucide-react';
 import { Language, LevelConfig, ScoreRecord, User } from '../types';
 import { LEVELS_CONFIG, generateLevelText } from '../data/levels';
 import { TypingArea } from './TypingArea';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { ResultModal } from './ResultModal';
-import { apiSaveScore } from '../utils/googleSheets';
+import { apiSaveScore, getLocalScores } from '../utils/googleSheets';
 import { useTheme } from '../context/ThemeContext';
 
 interface GameModeProps {
@@ -38,6 +40,25 @@ export const GameMode: React.FC<GameModeProps> = ({
     }
     return 10;
   });
+
+    const passedLevelIds = React.useMemo(() => {
+    const scores = getLocalScores();
+    const set = new Set<number>();
+    scores.forEach(s => {
+      if (s.gameMode !== 'game' || !s.passed) return;
+      if (
+        user &&
+        s.uid !== user.uid &&
+        s.uid !== user.studentId &&
+        s.displayName !== user.displayName
+      ) {
+        return;
+      }
+      const id = Number(s.levelId);
+      if (id >= 1 && id <= 10) set.add(id);
+    });
+    return set;
+  }, [user, completedRecord]);
 
   // Start Level
   const handleStartLevel = (level: LevelConfig) => {
@@ -69,6 +90,8 @@ export const GameMode: React.FC<GameModeProps> = ({
       scoreId: 'sc_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 5),
       uid: user ? user.uid : 'guest',
       displayName: user ? user.displayName : 'ผู้เล่นทั่วไป (Guest)',
+      avatar: user?.avatar || '',
+      avatarBg: user?.avatarBg || 'from-cyan-500 to-blue-600',
       gameMode: 'game',
       testType: 'NONE',
       language: language,
@@ -161,7 +184,11 @@ export const GameMode: React.FC<GameModeProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center gap-2 text-xs flex-wrap">
+            <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-rose-500/15 text-rose-500 font-bold border border-rose-500/30">
+              <Lock className="w-3.5 h-3.5" />
+              <span>ห้ามลบแก้ไข</span>
+            </span>
             <span
               className={`px-3 py-1.5 rounded-xl border ${
                 isDark
@@ -180,6 +207,7 @@ export const GameMode: React.FC<GameModeProps> = ({
           targetText={targetText}
           language={language}
           timeLimitSeconds={selectedLevel.timeLimitSeconds}
+          allowBackspace={false}
           onTargetCharChange={setCurrentTargetChar}
           onKeyPressed={setPressedKey}
           onComplete={handleLevelComplete}
@@ -221,22 +249,28 @@ export const GameMode: React.FC<GameModeProps> = ({
         }`}
       >
         <div className="relative z-10 max-w-2xl">
-          <div
-            className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold mb-3 border ${
-              isDark
-                ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
-                : 'bg-white/15 border-white/30 text-white'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>ระบบฝึกฝน 10 ระดับความยากแบบ Gamification</span>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <div
+              className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border ${
+                isDark
+                  ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
+                  : 'bg-white/15 border-white/30 text-white'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>ระบบฝึกฝน 10 ระดับความยากแบบ Gamification</span>
+            </div>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 border border-emerald-400/40 text-emerald-200">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>ผ่านแล้ว {passedLevelIds.size} / 10 ด่าน</span>
+            </span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
             เกมฝึกพิมพ์สัมผัส 10 ด่าน (Level 1 - 10)
           </h1>
           <p className="mt-2 text-sm sm:text-base leading-relaxed text-slate-100">
             ไต่ระดับจากแป้นเหย้าพื้นฐาน สลับนิ้ว แป้นแถวบน-ล่าง สู่การพิมพ์คำศัพท์และประโยคจริง 
-            ระบบจะสุ่มคำชุดใหม่ทุกครั้งที่เริ่มเล่นหรือกดเล่นซ้ำ
+            ระบบจะสุ่มคำชุดใหม่ทุกครั้งที่เริ่มเล่นหรือกดเล่นซ้ำ <span className="font-semibold text-amber-200">(กติกา: พิมพ์ผิดไม่สามารถลบแก้ไขย้อนหลังได้)</span>
           </p>
         </div>
       </div>
@@ -245,13 +279,18 @@ export const GameMode: React.FC<GameModeProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {LEVELS_CONFIG.map(level => {
           const isUnlocked = level.id <= unlockedLevel;
+          const isPassed = passedLevelIds.has(level.id);
           return (
             <div
               key={level.id}
               onClick={() => isUnlocked && handleStartLevel(level)}
               className={`relative rounded-2xl border p-5 transition-all duration-200 flex flex-col justify-between ${
                 isUnlocked
-                  ? isDark
+                  ? isPassed
+                    ? isDark
+                      ? 'bg-slate-900/90 border-emerald-500/40 hover:border-emerald-400 cursor-pointer shadow-lg hover:shadow-emerald-500/10 group'
+                      : 'bg-white border-emerald-300 hover:border-emerald-400 hover:shadow-md cursor-pointer group shadow-xs'
+                    : isDark
                     ? 'bg-slate-900/90 border-slate-800 hover:border-cyan-500/50 hover:bg-slate-850 cursor-pointer shadow-lg hover:shadow-cyan-500/10 group'
                     : 'bg-white border-slate-200 hover:border-cyan-400 hover:shadow-md cursor-pointer group shadow-xs'
                   : isDark
@@ -261,15 +300,23 @@ export const GameMode: React.FC<GameModeProps> = ({
             >
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <span
-                    className={`text-xs font-mono font-bold px-2.5 py-1 rounded-lg border ${
-                      isDark
-                        ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
-                        : 'bg-cyan-50 text-cyan-700 border-cyan-200'
-                    }`}
-                  >
-                    ด่าน {level.id} / 10
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-xs font-mono font-bold px-2.5 py-1 rounded-lg border ${
+                        isDark
+                          ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
+                          : 'bg-cyan-50 text-cyan-700 border-cyan-200'
+                      }`}
+                    >
+                      ด่าน {level.id} / 10
+                    </span>
+                    {isPassed && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>ผ่านแล้ว</span>
+                      </span>
+                    )}
+                  </div>
                   <div className={`flex items-center gap-1 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                     <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
                     <span>เกณฑ์ {level.targetAccuracy}%</span>

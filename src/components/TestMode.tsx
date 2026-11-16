@@ -21,7 +21,8 @@ import {
 import { TypingArea } from './TypingArea';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { QuizExamView } from './QuizExamView';
-import { apiSaveScore, getLocalScores } from '../utils/googleSheets';
+import { apiSaveScore } from '../utils/googleSheets';
+import { getPosttestUnlockStatus } from './MedalShowcase';
 import { useTheme } from '../context/ThemeContext';
 
 interface TestModeProps {
@@ -48,33 +49,7 @@ export const TestMode: React.FC<TestModeProps> = ({
   const [latestResult, setLatestResult] = useState<ScoreRecord | null>(null);
   const { isDark } = useTheme();
 
-  // Helper to check Post-test unlock criteria
-  const getUnlockStatus = () => {
-    const pretestQuiz = localStorage.getItem('touch_typing_pretest_quiz_v2');
-    const localScores = getLocalScores();
-    const hasPretest = Boolean(pretestQuiz) || localScores.some(s => s.testType === 'PRE_TEST' || s.gameMode === 'pretest');
-    const unlockedLevel = parseInt(localStorage.getItem('touch_typing_unlocked_level') || '1', 10);
-    const hasLearned =
-      unlockedLevel > 1 ||
-      Boolean(localStorage.getItem('touch_typing_learned_lesson')) ||
-      localScores.some(s => s.gameMode === 'game' || s.gameMode === 'ranked' || s.testType === 'RANKED');
-
-    let pretestScore: number | undefined = undefined;
-    if (pretestQuiz) {
-      try {
-        pretestScore = JSON.parse(pretestQuiz).score;
-      } catch {}
-    }
-
-    return {
-      isUnlocked: hasPretest && hasLearned,
-      hasPretest,
-      hasLearned,
-      pretestScore
-    };
-  };
-
-  const [unlockStatus, setUnlockStatus] = useState(getUnlockStatus);
+  const [unlockStatus, setUnlockStatus] = useState(() => getPosttestUnlockStatus(user));
 
   // Keep activeTest in sync with specificType and refresh unlock status
   React.useEffect(() => {
@@ -83,9 +58,9 @@ export const TestMode: React.FC<TestModeProps> = ({
       setLatestResult(null);
       setCurrentTargetChar(null);
       setPressedKey(null);
-      setUnlockStatus(getUnlockStatus());
+      setUnlockStatus(getPosttestUnlockStatus(user));
     }
-  }, [specificType]);
+  }, [specificType, user]);
 
   const isPosttestLocked = activeTest === 'posttest' && !unlockStatus.isUnlocked;
 
@@ -259,7 +234,9 @@ export const TestMode: React.FC<TestModeProps> = ({
                   </div>
                   <div className={`text-xs mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                     {unlockStatus.hasPretest
-                      ? `✓ ทำเสร็จสิ้นแล้ว (คะแนน: ${unlockStatus.pretestScore ?? 10}/10)`
+                      ? unlockStatus.pretestScore !== undefined
+                        ? `✓ ทำเสร็จสิ้นแล้ว (คะแนน: ${unlockStatus.pretestScore}/10)`
+                        : '✓ ทำแบบทดสอบก่อนเรียนเสร็จสิ้นแล้ว'
                       : 'ยังไม่ได้ทำแบบทดสอบก่อนเรียน'}
                   </div>
                 </div>
@@ -276,10 +253,10 @@ export const TestMode: React.FC<TestModeProps> = ({
                 )}
               </div>
 
-              {/* Step 2: Lessons / Practice */}
+              {/* Step 2: Learning Center */}
               <div
                 className={`p-4 rounded-2xl border transition-all flex items-start gap-3.5 ${
-                  unlockStatus.hasLearned
+                  unlockStatus.hasLesson
                     ? isDark
                       ? 'bg-emerald-950/25 border-emerald-500/40 text-emerald-300'
                       : 'bg-emerald-50/80 border-emerald-300 text-emerald-800'
@@ -289,7 +266,7 @@ export const TestMode: React.FC<TestModeProps> = ({
                 }`}
               >
                 <div className="mt-0.5 shrink-0">
-                  {unlockStatus.hasLearned ? (
+                  {unlockStatus.hasLesson ? (
                     <CheckCircle2 className="w-5 h-5 text-emerald-500" />
                   ) : (
                     <div className="w-5 h-5 rounded-full border-2 border-slate-400 flex items-center justify-center text-[10px] font-bold text-slate-400">
@@ -299,31 +276,75 @@ export const TestMode: React.FC<TestModeProps> = ({
                 </div>
                 <div className="flex-1">
                   <div className="font-bold text-sm">
-                    2. เข้าศึกษาศูนย์การเรียนรู้ หรือ ผ่านด่านเกมฝึกพิมพ์
+                    2. ฝึกพิมพ์ในศูนย์การเรียนรู้ (Learning Center)
                   </div>
                   <div className={`text-xs mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                    {unlockStatus.hasLearned
-                      ? '✓ ผ่านการฝึกฝนทักษะการพิมพ์เรียบร้อยแล้ว'
-                      : 'เข้าศึกษาบทเรียนหรือฝึกพิมพ์ในโหมดเกมอย่างน้อย 1 ด่าน'}
+                    {unlockStatus.hasLesson
+                      ? '✓ ฝึกพิมพ์บทเรียนในศูนย์การเรียนรู้เสร็จสิ้นแล้ว'
+                      : 'ต้องพิมพ์แบบฝึกหัดในศูนย์การเรียนรู้ให้จบอย่างน้อย 1 ชุด'}
                   </div>
                 </div>
-                {!unlockStatus.hasLearned && (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      onClick={() => onNavigateTab && onNavigateTab('lessons')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                        isDark ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
-                      }`}
-                    >
-                      บทเรียน
-                    </button>
-                    <button
-                      onClick={() => onNavigateTab && onNavigateTab('game')}
-                      className="px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs transition-all shadow-xs"
-                    >
-                      โหมดเกม
-                    </button>
+                {!unlockStatus.hasLesson && (
+                  <button
+                    onClick={() => onNavigateTab && onNavigateTab('lessons')}
+                    className="px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shrink-0 shadow-xs transition-all"
+                  >
+                    เข้าบทเรียน
+                  </button>
+                )}
+              </div>
+
+              {/* Step 3: All 10 Game Levels */}
+              <div
+                className={`p-4 rounded-2xl border transition-all flex items-start gap-3.5 ${
+                  unlockStatus.hasAll10Levels
+                    ? isDark
+                      ? 'bg-emerald-950/25 border-emerald-500/40 text-emerald-300'
+                      : 'bg-emerald-50/80 border-emerald-300 text-emerald-800'
+                    : isDark
+                    ? 'bg-slate-950/70 border-slate-800'
+                    : 'bg-slate-50 border-slate-200'
+                }`}
+              >
+                <div className="mt-0.5 shrink-0">
+                  {unlockStatus.hasAll10Levels ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                  ) : (
+                    <div className="w-5 h-5 rounded-full border-2 border-slate-400 flex items-center justify-center text-[10px] font-bold text-slate-400">
+                      3
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-sm">
+                      3. ผ่านโหมดเกมฝึกพิมพ์ครบทั้ง 10 ด่าน
+                    </span>
+                    <span className="text-xs font-mono font-bold text-cyan-500">
+                      {unlockStatus.passedLevelsCount}/10 ด่าน
+                    </span>
                   </div>
+                  <div className={`text-xs mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {unlockStatus.hasAll10Levels
+                      ? '✓ ผ่านครบทั้ง 10 ด่านเรียบร้อยแล้ว'
+                      : `ยังเหลือด่านที่ต้องผ่าน: ${unlockStatus.missingLevels.join(', ')}`}
+                  </div>
+                  {!unlockStatus.hasAll10Levels && (
+                    <div className={`w-full h-1.5 rounded-full mt-2 overflow-hidden ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
+                      <div
+                        className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-300"
+                        style={{ width: `${(unlockStatus.passedLevelsCount / 10) * 100}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+                {!unlockStatus.hasAll10Levels && (
+                  <button
+                    onClick={() => onNavigateTab && onNavigateTab('game')}
+                    className="px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shrink-0 shadow-xs transition-all"
+                  >
+                    โหมดเกม
+                  </button>
                 )}
               </div>
             </div>
@@ -341,12 +362,20 @@ export const TestMode: React.FC<TestModeProps> = ({
                   <span>เริ่มทำแบบทดสอบก่อนเรียน (Pre-test) ทันที</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
-              ) : (
+              ) : !unlockStatus.hasLesson ? (
                 <button
                   onClick={() => onNavigateTab && onNavigateTab('lessons')}
                   className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs shadow-lg shadow-cyan-500/20 transition-all flex items-center justify-center gap-2"
                 >
-                  <span>ไปยังศูนย์การเรียนรู้ เพื่อฝึกฝนต่อ</span>
+                  <span>ไปยังศูนย์การเรียนรู้ เพื่อฝึกพิมพ์ให้จบ</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={() => onNavigateTab && onNavigateTab('game')}
+                  className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs shadow-lg shadow-cyan-500/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <span>ไปยังโหมดเกม 10 ด่าน (เหลือ {10 - unlockStatus.passedLevelsCount} ด่าน)</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               )}

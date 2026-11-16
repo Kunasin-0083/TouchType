@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ClipboardCheck,
   Award,
@@ -11,9 +11,9 @@ import {
   Clock,
   Send,
   TrendingUp,
-  Sparkles,
   BookOpen,
-  Trophy
+  Trophy,
+  Edit3
 } from 'lucide-react';
 import { PRETEST_QUESTIONS, POSTTEST_QUESTIONS, QuizQuestion } from '../data/quizQuestions';
 import { User, ScoreRecord } from '../types';
@@ -45,55 +45,140 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [submittedScore, setSubmittedScore] = useState<number | null>(null);
   const [showReview, setShowReview] = useState(false);
+  const [confirmIncompleteSubmit, setConfirmIncompleteSubmit] = useState(false);
+  const [showPreSubmitSummary, setShowPreSubmitSummary] = useState(false);
+  const [isEditingFromReview, setIsEditingFromReview] = useState(false);
+  const [transitionPhase, setTransitionPhase] = useState<'idle' | 'leaving' | 'entering'>('idle');
+  const autoAdvanceTimerRef = useRef<number | null>(null);
+  const transitionTimerRef = useRef<number | null>(null);
+  const enterFrameRef = useRef<number | null>(null);
 
-  // Timer is disabled for quiz exam as requested (สอบไม่ต้องมีจับเวลา)
-  useEffect(() => {
-    // No timer interval
-  }, []);
-
-  // Load prior pretest quiz score for Post-test comparison
-  const getStoredQuizScore = (key: string): { score: number; total: number; date: string } | null => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
+  const clearAdvanceTimers = () => {
+    if (autoAdvanceTimerRef.current) {
+      window.clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+    if (transitionTimerRef.current) {
+      window.clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
+    if (enterFrameRef.current) {
+      window.cancelAnimationFrame(enterFrameRef.current);
+      enterFrameRef.current = null;
     }
   };
 
-  const priorPretest = getStoredQuizScore(LOCAL_PRETEST_QUIZ_KEY);
+  useEffect(() => {
+    return () => {
+      clearAdvanceTimers();
+    };
+  }, []);
+
+  // Load prior pretest quiz score for Post-test comparison (scoped per student)
+  const pretestStorageKey = user?.uid
+    ? `${LOCAL_PRETEST_QUIZ_KEY}_${user.uid}`
+    : LOCAL_PRETEST_QUIZ_KEY;
+  const posttestStorageKey = user?.uid
+    ? `${LOCAL_POSTTEST_QUIZ_KEY}_${user.uid}`
+    : LOCAL_POSTTEST_QUIZ_KEY;
+
+  const getStoredQuizScore = (key: string): { score: number; total: number; date: string } | null => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+    if (user) {
+      const match = getLocalScores().find(
+        s =>
+          (s.uid === user.uid || s.displayName === user.displayName) &&
+          (s.gameMode === 'pretest' || s.testType === 'PRE_TEST') &&
+          String(s.levelId || '').includes('quiz')
+      );
+      if (match) {
+        return {
+          score: Math.round(match.score / 100),
+          total: match.totalCharacters || 10,
+          date: match.createdAt
+        };
+      }
+    }
+    return null;
+  };
+
+  const priorPretest = getStoredQuizScore(pretestStorageKey);
 
   const currentQ = questions[currentIndex];
   const answeredCount = Object.keys(selectedAnswers).length;
   const isAllAnswered = answeredCount === questions.length;
 
+  const transitionToStep = (applyStep: () => void) => {
+    setTransitionPhase('leaving');
+    transitionTimerRef.current = window.setTimeout(() => {
+      applyStep();
+      setTransitionPhase('entering');
+      enterFrameRef.current = window.requestAnimationFrame(() => {
+        enterFrameRef.current = window.requestAnimationFrame(() => {
+          setTransitionPhase('idle');
+        });
+      });
+    }, 200);
+  };
+
   const handleSelectOption = (optionIndex: number) => {
-    if (isSubmitted) return;
-    setSelectedAnswers(prev => ({
-      ...prev,
+    if (isSubmitted || transitionPhase === 'leaving') return;
+    setConfirmIncompleteSubmit(false);
+
+    const nextAnswers: Record<number, number> = {
+      ...selectedAnswers,
       [currentQ.id]: optionIndex
-    }));
+    };
+    setSelectedAnswers(nextAnswers);
+
+    clearAdvanceTimers();
+
+    // Hold briefly (360ms) so the selected answer highlight registers cleanly, then smoothly transition
+    autoAdvanceTimerRef.current = window.setTimeout(() => {
+      const allDone = questions.every(q => nextAnswers[q.id] !== undefined);
+      transitionToStep(() => {
+        if (isEditingFromReview) {
+          setIsEditingFromReview(false);
+          setShowPreSubmitSummary(true);
+        } else if (allDone) {
+          setShowPreSubmitSummary(true);
+        } else if (currentIndex < questions.length - 1) {
+          setCurrentIndex(currentIndex + 1);
+        } else {
+          const firstUnansweredIdx = questions.findIndex(q => nextAnswers[q.id] === undefined);
+          if (firstUnansweredIdx !== -1) {
+            setCurrentIndex(firstUnansweredIdx);
+          }
+        }
+      });
+    }, 360);
   };
 
   const handleNext = () => {
+    clearAdvanceTimers();
     if (currentIndex < questions.length - 1) {
-      setCurrentIndex(currentIndex + 1);
+      transitionToStep(() => setCurrentIndex(currentIndex + 1));
     }
   };
 
   const handlePrev = () => {
+    clearAdvanceTimers();
     if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
+      transitionToStep(() => setCurrentIndex(currentIndex - 1));
     }
   };
 
-  const handleSubmit = async () => {
-    if (!isAllAnswered) {
-      const confirmSubmit = window.confirm(
-        `คุณยังทำข้อสอบไม่ครบ (${answeredCount}/${questions.length} ข้อ) ต้องการส่งข้อสอบเลยหรือไม่?`
-      );
-      if (!confirmSubmit) return;
+  const handleSubmit = async (forceSubmit: boolean = false) => {
+    if (!isAllAnswered && !forceSubmit) {
+      setConfirmIncompleteSubmit(true);
+      return;
     }
+    setConfirmIncompleteSubmit(false);
 
     // Calculate score
     let correctCount = 0;
@@ -107,7 +192,7 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
     setIsSubmitted(true);
 
     // Save to local storage for quick comparison
-    const storageKey = testType === 'pretest' ? LOCAL_PRETEST_QUIZ_KEY : LOCAL_POSTTEST_QUIZ_KEY;
+    const storageKey = testType === 'pretest' ? pretestStorageKey : posttestStorageKey;
     try {
       localStorage.setItem(
         storageKey,
@@ -153,12 +238,16 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
   };
 
   const handleRetake = () => {
+    clearAdvanceTimers();
+    setTransitionPhase('idle');
     setSelectedAnswers({});
     setCurrentIndex(0);
     setIsSubmitted(false);
     setElapsedSeconds(0);
     setSubmittedScore(null);
     setShowReview(false);
+    setShowPreSubmitSummary(false);
+    setIsEditingFromReview(false);
   };
 
   const formatTime = (secs: number) => {
@@ -316,7 +405,7 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
                 showReview
                   ? 'bg-cyan-600 text-white border-cyan-600 shadow-md shadow-cyan-600/20'
                   : isDark
-                  ? 'bg-slate-800 hover:bg-slate-750 text-slate-300 border-slate-700'
+                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
               }`}
             >
@@ -327,7 +416,7 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
               onClick={handleRetake}
               className={`px-5 py-2.5 rounded-xl font-bold text-xs border transition-all ${
                 isDark
-                  ? 'bg-slate-800 hover:bg-slate-750 text-slate-300 border-slate-700'
+                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
               }`}
             >
@@ -511,199 +600,438 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* No Timer Badge (สอบไม่ต้องมีจับเวลา) */}
-          <div
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold ${
-              isDark
-                ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400'
-                : 'bg-emerald-50 border-emerald-200 text-emerald-700'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-            <span>ไม่จำกัดเวลา (ทำตามอัธยาศัย)</span>
-          </div>
-
-          {/* Quick jump to lessons if in pretest */}
-          {testType === 'pretest' && onNavigateTab && (
+        {testType === 'pretest' && onNavigateTab && (
+          <div className="flex items-center gap-3">
+            {/* Quick jump to lessons if in pretest */}
             <button
               onClick={() => onNavigateTab('lessons')}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
                 isDark
-                  ? 'bg-slate-800 hover:bg-slate-750 text-slate-300 border-slate-700'
+                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
               }`}
             >
               ข้ามไปศูนย์การเรียนรู้
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* Progress Bar & Question Jump Pills */}
+      {/* Progress Bar & Question Stepper */}
       <div
-        className={`border rounded-2xl p-4 transition-all duration-300 ${
-          isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200/90 shadow-sm'
+        className={`border rounded-3xl p-5 sm:p-6 shadow-lg transition-all duration-300 ${
+          isDark
+            ? 'bg-slate-900/95 border-slate-800 shadow-slate-950/50'
+            : 'bg-white border-slate-200/90 shadow-slate-200/40'
         }`}
       >
-        <div className="flex items-center justify-between text-xs mb-2">
-          <span className={`font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
-            ข้อที่ {currentIndex + 1} จาก {questions.length} ข้อ
-          </span>
-          <span className="text-cyan-600 font-semibold font-mono">
-            ตอบแล้ว {answeredCount} / {questions.length} ข้อ
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2.5">
+            <span
+              className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                isDark
+                  ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300'
+                  : 'bg-cyan-50 border-cyan-200 text-cyan-700'
+              }`}
+            >
+              ข้อที่ {currentIndex + 1} / {questions.length}
+            </span>
+            <span className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              เลือกข้อที่ต้องการทำได้ทันที
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 font-mono tabular-nums text-xs">
+            <span
+              className={`font-bold ${
+                isAllAnswered
+                  ? 'text-emerald-500'
+                  : isDark
+                  ? 'text-cyan-400'
+                  : 'text-cyan-600'
+              }`}
+            >
+              ตอบแล้ว {answeredCount}/{questions.length} ข้อ
+            </span>
+            <span
+              className={`px-2 py-0.5 rounded-md text-[11px] font-bold ${
+                isDark ? 'bg-slate-800 text-slate-300' : 'bg-slate-100 text-slate-700'
+              }`}
+            >
+              {Math.round((answeredCount / questions.length) * 100)}%
+            </span>
+          </div>
         </div>
 
-        {/* Progress bar line */}
-        <div className={`w-full h-2 rounded-full overflow-hidden ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
+        {/* Sleek Gradient Progress Track */}
+        <div
+          className={`w-full h-2.5 rounded-full overflow-hidden p-0.5 ${
+            isDark ? 'bg-slate-950 border border-slate-800/80' : 'bg-slate-100 border border-slate-200'
+          }`}
+        >
           <div
-            style={{ width: `${(answeredCount / questions.length) * 100}%` }}
-            className="h-full bg-gradient-to-r from-cyan-500 to-blue-600 rounded-full transition-all duration-300"
+            style={{ width: `${Math.max((answeredCount / questions.length) * 100, answeredCount > 0 ? 4 : 0)}%` }}
+            className={`h-full rounded-full transition-all duration-500 ${
+              isAllAnswered
+                ? 'bg-gradient-to-r from-emerald-400 via-teal-500 to-cyan-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]'
+                : 'bg-gradient-to-r from-cyan-400 via-sky-500 to-blue-600 shadow-[0_0_10px_rgba(6,182,212,0.45)]'
+            }`}
           />
         </div>
 
-        {/* Jump Numbers */}
-        <div className="flex items-center justify-between gap-1.5 mt-3 pt-3 border-t border-slate-800/60 overflow-x-auto no-scrollbar">
+        {/* 10-Step Question Grid */}
+        <div
+          className={`grid grid-cols-5 sm:grid-cols-10 gap-2 mt-4 pt-4 border-t ${
+            isDark ? 'border-slate-800/80' : 'border-slate-200/80'
+          }`}
+        >
           {questions.map((q, idx) => {
             const isAnswered = selectedAnswers[q.id] !== undefined;
             const isCurrent = currentIndex === idx;
 
-            let btnClass = isDark
-              ? 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700'
-              : 'bg-slate-100 border-slate-200 text-slate-400 hover:border-slate-300';
-
-            if (isAnswered) {
-              btnClass = isDark
-                ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300 font-bold'
-                : 'bg-cyan-100 border-cyan-400 text-cyan-800 font-bold';
-            }
-
+            let tileStyle = '';
             if (isCurrent) {
-              btnClass += ' ring-2 ring-cyan-400 scale-105';
+              tileStyle = isDark
+                ? 'bg-gradient-to-b from-cyan-500 to-blue-600 border-cyan-300/60 text-white font-bold shadow-[0_4px_14px_-2px_rgba(6,182,212,0.55)] -translate-y-0.5'
+                : 'bg-gradient-to-b from-cyan-500 to-blue-600 border-cyan-600 text-white font-bold shadow-[0_4px_12px_-2px_rgba(14,165,233,0.45)] -translate-y-0.5';
+            } else if (isAnswered) {
+              tileStyle = isDark
+                ? 'bg-emerald-500/15 border-emerald-500/45 text-emerald-300 hover:bg-emerald-500/25 font-bold'
+                : 'bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100 font-bold';
+            } else {
+              tileStyle = isDark
+                ? 'bg-slate-950/90 border-slate-800 text-slate-400 hover:text-white hover:border-slate-600 hover:bg-slate-800/70'
+                : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900 hover:border-cyan-300 hover:bg-white';
             }
 
             return (
               <button
                 key={q.id}
                 type="button"
-                onClick={() => setCurrentIndex(idx)}
-                className={`w-8 h-8 rounded-xl text-xs flex items-center justify-center border font-mono transition-all shrink-0 ${btnClass}`}
+                onClick={() => {
+                  clearAdvanceTimers();
+                  setTransitionPhase('idle');
+                  setShowPreSubmitSummary(false);
+                  setIsEditingFromReview(isAllAnswered);
+                  setCurrentIndex(idx);
+                }}
+                title={`ข้อที่ ${idx + 1}${isAnswered ? ' (ตอบแล้ว)' : ' (ยังไม่ตอบ)'}`}
+                className={`relative h-10 rounded-xl text-xs font-mono tabular-nums border flex items-center justify-center transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 ${tileStyle}`}
               >
-                {idx + 1}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Current Question Card */}
-      <div
-        className={`border rounded-3xl p-6 sm:p-8 shadow-xl transition-all duration-300 ${
-          isDark
-            ? 'bg-slate-900 border-slate-800'
-            : 'bg-white border-slate-200/90 shadow-slate-200/50'
-        }`}
-      >
-        <div className="flex items-center gap-2 mb-3">
-          <span className="w-8 h-8 rounded-xl bg-cyan-500 text-white font-black text-xs flex items-center justify-center shadow-md shadow-cyan-500/20">
-            {currentIndex + 1}
-          </span>
-          <span className={`text-xs font-semibold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-            คำถามข้อที่ {currentIndex + 1}
-          </span>
-        </div>
-
-        <h3 className={`text-base sm:text-lg font-bold mb-6 leading-relaxed ${isDark ? 'text-white' : 'text-slate-900'}`}>
-          {currentQ.question}
-        </h3>
-
-        {/* 4 Clickable Options */}
-        <div className="space-y-3">
-          {currentQ.options.map((option, optIdx) => {
-            const isSelected = selectedAnswers[currentQ.id] === optIdx;
-
-            return (
-              <button
-                key={optIdx}
-                type="button"
-                onClick={() => handleSelectOption(optIdx)}
-                className={`w-full text-left p-4 rounded-2xl border text-sm transition-all flex items-center justify-between ${
-                  isSelected
-                    ? 'border-cyan-500 bg-cyan-500/15 ring-2 ring-cyan-400 shadow-md font-semibold text-cyan-600 scale-[1.01]'
-                    : isDark
-                    ? 'bg-slate-950/70 border-slate-800 hover:border-slate-700 text-slate-300 hover:bg-slate-950'
-                    : 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-800 hover:bg-white'
-                }`}
-              >
-                <div className="flex items-center gap-3">
+                <span>{idx + 1}</span>
+                {isAnswered && !isCurrent && (
                   <span
-                    className={`w-6 h-6 rounded-lg text-xs font-bold flex items-center justify-center shrink-0 border ${
-                      isSelected
-                        ? 'bg-cyan-500 text-white border-cyan-500'
-                        : isDark
-                        ? 'bg-slate-800 border-slate-700 text-slate-400'
-                        : 'bg-slate-200 border-slate-300 text-slate-600'
-                    }`}
-                  >
-                    {['ก', 'ข', 'ค', 'ง'][optIdx] || optIdx + 1}
-                  </span>
-                  <span>{option}</span>
-                </div>
-
-                {isSelected && (
-                  <CheckCircle2 className="w-5 h-5 text-cyan-500 shrink-0 drop-shadow-sm ml-2" />
+                    aria-hidden="true"
+                    className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-400"
+                  />
+                )}
+                {isCurrent && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute bottom-1 left-1/2 -translate-x-1/2 w-3 h-0.5 rounded-full bg-white/85"
+                  />
                 )}
               </button>
             );
           })}
         </div>
 
-        {/* Navigation Buttons */}
-        <div className="flex items-center justify-between gap-3 mt-8 pt-5 border-t border-slate-800/80">
-          <button
-            type="button"
-            onClick={handlePrev}
-            disabled={currentIndex === 0}
-            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold border transition-all ${
-              currentIndex === 0
-                ? 'opacity-40 cursor-not-allowed border-transparent'
-                : isDark
-                ? 'bg-slate-800 hover:bg-slate-750 text-slate-300 border-slate-700'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
-            }`}
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>ข้อย้อนกลับ</span>
-          </button>
+        {/* Subtle Legend */}
+        <div className={`flex flex-wrap items-center justify-end gap-4 mt-3 text-[11px] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm bg-gradient-to-b from-cyan-500 to-blue-600 inline-block" />
+            <span>ข้อปัจจุบัน</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className={`w-2.5 h-2.5 rounded-sm border inline-block ${isDark ? 'bg-emerald-500/25 border-emerald-500/60' : 'bg-emerald-100 border-emerald-400'}`} />
+            <span>ตอบแล้ว</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className={`w-2.5 h-2.5 rounded-sm border inline-block ${isDark ? 'bg-slate-950 border-slate-700' : 'bg-slate-100 border-slate-300'}`} />
+            <span>ยังไม่ตอบ</span>
+          </span>
+        </div>
+      </div>
 
-          <div className="flex items-center gap-2">
-            {currentIndex < questions.length - 1 ? (
-              <button
-                type="button"
-                onClick={handleNext}
-                className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shadow-md shadow-cyan-600/20 transition-all hover:scale-105"
-              >
-                <span>ข้อถัดไป</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            ) : null}
+      {/* Pre-Submit 10-Question Review & Edit Screen OR Active Question Card */}
+      {showPreSubmitSummary ? (
+        <div
+          className={`border rounded-3xl p-6 sm:p-8 shadow-xl transition-all duration-300 ${
+            isDark
+              ? 'bg-slate-900 border-slate-800'
+              : 'bg-white border-slate-200/90 shadow-slate-200/50'
+          }`}
+        >
+          <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b mb-5 ${isDark ? 'border-slate-800' : 'border-slate-200/80'}`}>
+            <div>
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/15 border border-emerald-500/35 text-emerald-500 mb-2">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>ตอบครบทั้ง 10 ข้อแล้ว</span>
+              </div>
+              <h3 className={`text-lg sm:text-xl font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                ตรวจสอบและแก้ไขคำตอบก่อนส่ง
+              </h3>
+              <p className={`text-xs mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                หากต้องการเปลี่ยนคำตอบข้อใด สามารถกดปุ่ม "แก้ไข" ในข้อนั้นได้ทันที ก่อนกดยืนยันส่งข้อสอบ
+              </p>
+            </div>
 
             <button
               type="button"
-              onClick={handleSubmit}
-              className={`flex items-center gap-1.5 px-6 py-2.5 rounded-xl text-xs font-black shadow-lg transition-all ${
-                isAllAnswered
-                  ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white shadow-emerald-500/20 hover:scale-105'
-                  : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-blue-500/20'
+              onClick={() => handleSubmit(false)}
+              className="px-6 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-black text-xs sm:text-sm shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 shrink-0 transition-transform hover:scale-[1.02]"
+            >
+              <Send className="w-4 h-4" />
+              <span>ยืนยันส่งข้อสอบ (ตรวจคะแนน)</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {questions.map((q, idx) => {
+              const choiceIdx = selectedAnswers[q.id];
+              const choiceLabel = choiceIdx !== undefined ? ['ก', 'ข', 'ค', 'ง'][choiceIdx] : '-';
+              const choiceText = choiceIdx !== undefined ? q.options[choiceIdx] : 'ยังไม่ได้เลือกคำตอบ';
+
+              return (
+                <div
+                  key={q.id}
+                  className={`p-4 rounded-2xl border flex items-start justify-between gap-3 transition-colors ${
+                    isDark
+                      ? 'bg-slate-950/70 border-slate-800 hover:border-slate-700'
+                      : 'bg-slate-50 border-slate-200 hover:border-cyan-300'
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="w-6 h-6 rounded-lg bg-cyan-500/20 text-cyan-500 font-mono font-bold text-xs flex items-center justify-center shrink-0">
+                        {idx + 1}
+                      </span>
+                      <span className={`text-xs font-semibold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                        {q.question}
+                      </span>
+                    </div>
+                    <div className={`text-xs pl-8 truncate ${isDark ? 'text-emerald-400' : 'text-emerald-700'} font-medium`}>
+                      ตอบ {choiceLabel}. {choiceText}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCurrentIndex(idx);
+                      setIsEditingFromReview(true);
+                      setShowPreSubmitSummary(false);
+                    }}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition-colors ${
+                      isDark
+                        ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-cyan-300'
+                        : 'bg-white hover:bg-cyan-50 border-slate-300 text-cyan-700'
+                    }`}
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    <span>แก้ไข</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className={`flex flex-wrap items-center justify-between gap-3 mt-6 pt-5 border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+            <button
+              type="button"
+              onClick={() => {
+                setShowPreSubmitSummary(false);
+                setIsEditingFromReview(true);
+                setCurrentIndex(0);
+              }}
+              className={`inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold border transition-colors ${
+                isDark
+                  ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+                  : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
               }`}
             >
+              <ArrowLeft className="w-4 h-4" />
+              <span>กลับไปทบทวนข้อที่ 1</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSubmit(false)}
+              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-black text-xs shadow-lg shadow-emerald-500/25 flex items-center gap-2 transition-transform hover:scale-105"
+            >
               <Send className="w-3.5 h-3.5" />
-              <span>ส่งข้อสอบ (ตรวจคะแนน)</span>
+              <span>ยืนยันส่งข้อสอบ (ตรวจคะแนน)</span>
             </button>
           </div>
         </div>
-      </div>
+      ) : (
+        <div
+          className={`border rounded-3xl p-6 sm:p-8 shadow-xl ${
+            transitionPhase === 'entering'
+              ? 'opacity-0 translate-x-3 transition-none'
+              : transitionPhase === 'leaving'
+              ? 'opacity-0 -translate-x-3 transition-all duration-200 ease-out'
+              : 'opacity-100 translate-x-0 transition-all duration-300 ease-out'
+          } ${
+            isDark
+              ? 'bg-slate-900 border-slate-800'
+              : 'bg-white border-slate-200/90 shadow-slate-200/50'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2">
+              <span className="w-8 h-8 rounded-xl bg-cyan-500 text-white font-black text-xs flex items-center justify-center shadow-md shadow-cyan-500/20">
+                {currentIndex + 1}
+              </span>
+              <span className={`text-xs font-semibold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                {isEditingFromReview
+                  ? `กำลังแก้ไขคำตอบข้อที่ ${currentIndex + 1} (เลือกคำตอบใหม่เพื่อกลับหน้าสรุป)`
+                  : `คำถามข้อที่ ${currentIndex + 1} · เลือกคำตอบเพื่อไปยังข้อถัดไปอัตโนมัติ`}
+              </span>
+            </div>
+
+            {isAllAnswered && (
+              <button
+                type="button"
+                onClick={() => {
+                  clearAdvanceTimers();
+                  setTransitionPhase('idle');
+                  setIsEditingFromReview(false);
+                  setShowPreSubmitSummary(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500/15 border border-emerald-500/40 text-emerald-500 hover:bg-emerald-500/25 transition-colors"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>กลับหน้าสรุปคำตอบก่อนส่ง</span>
+              </button>
+            )}
+          </div>
+
+          <h3 className={`text-base sm:text-lg font-bold mb-6 leading-relaxed ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            {currentQ.question}
+          </h3>
+
+          {/* 4 Clickable Options */}
+          <div className="space-y-3">
+            {currentQ.options.map((option, optIdx) => {
+              const isSelected = selectedAnswers[currentQ.id] === optIdx;
+
+              return (
+                <button
+                  key={optIdx}
+                  type="button"
+                  onClick={() => handleSelectOption(optIdx)}
+                  className={`w-full text-left p-4 rounded-2xl border text-sm transition-all duration-200 flex items-center justify-between ${
+                    isSelected
+                      ? isDark
+                        ? 'border-cyan-400 bg-cyan-500/20 ring-2 ring-cyan-400/70 shadow-md font-semibold text-cyan-200 scale-[1.01]'
+                        : 'border-cyan-500 bg-cyan-50 ring-2 ring-cyan-400/70 shadow-md font-semibold text-cyan-800 scale-[1.01]'
+                      : isDark
+                      ? 'bg-slate-950/70 border-slate-800 hover:border-slate-700 text-slate-300 hover:bg-slate-950'
+                      : 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-800 hover:bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`w-6 h-6 rounded-lg text-xs font-bold flex items-center justify-center shrink-0 border ${
+                        isSelected
+                          ? 'bg-cyan-500 text-white border-cyan-500'
+                          : isDark
+                          ? 'bg-slate-800 border-slate-700 text-slate-400'
+                          : 'bg-slate-200 border-slate-300 text-slate-600'
+                      }`}
+                    >
+                      {['ก', 'ข', 'ค', 'ง'][optIdx] || optIdx + 1}
+                    </span>
+                    <span>{option}</span>
+                  </div>
+
+                  {isSelected && (
+                    <CheckCircle2 className="w-5 h-5 text-cyan-500 shrink-0 drop-shadow-sm ml-2" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Navigation Buttons */}
+          <div className={`flex flex-wrap items-center justify-between gap-3 mt-8 pt-5 border-t ${isDark ? 'border-slate-800/80' : 'border-slate-200'}`}>
+            <button
+              type="button"
+              onClick={handlePrev}
+              disabled={currentIndex === 0}
+              className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold border transition-all ${
+                currentIndex === 0
+                  ? 'opacity-40 cursor-not-allowed border-transparent'
+                  : isDark
+                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+              }`}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>ข้อย้อนกลับ</span>
+            </button>
+
+            <div className="flex items-center gap-2">
+              {currentIndex < questions.length - 1 ? (
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shadow-md shadow-cyan-600/20 transition-all hover:scale-105"
+                >
+                  <span>ข้อถัดไป</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => handleSubmit(false)}
+                className={`flex items-center gap-1.5 px-6 py-2.5 rounded-xl text-xs font-black shadow-lg transition-all ${
+                  isAllAnswered
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white shadow-emerald-500/20 hover:scale-105'
+                    : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-blue-500/20'
+                }`}
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>ส่งข้อสอบ (ตรวจคะแนน)</span>
+              </button>
+            </div>
+          </div>
+
+          {confirmIncompleteSubmit && !isAllAnswered && (
+            <div
+              className={`mt-4 p-3.5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+                isDark
+                  ? 'bg-amber-950/35 border-amber-500/40 text-amber-200'
+                  : 'bg-amber-50 border-amber-300 text-amber-900'
+              }`}
+            >
+              <span>
+                คุณยังทำข้อสอบไม่ครบ ({answeredCount}/{questions.length} ข้อ) ต้องการส่งข้อสอบเลยหรือไม่?
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSubmit(true)}
+                  className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold"
+                >
+                  ยืนยันส่งข้อสอบ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmIncompleteSubmit(false)}
+                  className={`px-3 py-1.5 rounded-lg border font-medium ${
+                    isDark ? 'border-slate-700 text-slate-300' : 'border-amber-300 text-amber-800'
+                  }`}
+                >
+                  ทำต่อ
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

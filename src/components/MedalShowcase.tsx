@@ -9,9 +9,10 @@ import {
   Gamepad2,
   Crown
 } from 'lucide-react';
-import { ScoreRecord } from '../types';
+import { ScoreRecord, User } from '../types';
 import { LEVELS_CONFIG } from '../data/levels';
 import { useTheme } from '../context/ThemeContext';
+import { getLocalScores } from '../utils/googleSheets';
 
 export const GRAND_MEDAL_IMAGE_PATH = '/assets/aistudio/_________________________________fc88b102.png';
 
@@ -96,6 +97,61 @@ export function getCurriculumCompletion(userScores: ScoreRecord[]): CurriculumCo
     totalSteps,
     completionPercent,
     isGrandComplete
+  };
+}
+
+export interface PosttestUnlockStatus {
+  isUnlocked: boolean;
+  hasPretest: boolean;
+  hasLesson: boolean;
+  hasAll10Levels: boolean;
+  passedLevelsCount: number;
+  missingLevels: number[];
+  pretestScore?: number;
+}
+
+export function getPosttestUnlockStatus(user: User | null): PosttestUnlockStatus {
+  if (!user || !user.studentId) {
+    return {
+      isUnlocked: false,
+      hasPretest: false,
+      hasLesson: false,
+      hasAll10Levels: false,
+      passedLevelsCount: 0,
+      missingLevels: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    };
+  }
+
+  const allScores = getLocalScores();
+  const userScores = allScores.filter(
+    s =>
+      s.uid === user.uid ||
+      (user.studentId && s.uid === user.studentId) ||
+      (user.displayName && s.displayName === user.displayName)
+  );
+
+  const info = getCurriculumCompletion(userScores);
+  const missingLevels: number[] = [];
+  for (let i = 1; i <= 10; i++) {
+    if (!info.passedLevelMap.has(i)) {
+      missingLevels.push(i);
+    }
+  }
+
+  let pretestScore: number | undefined;
+  const quizPretest = info.pretestRecords.find(r => String(r.levelId || '').includes('quiz'));
+  if (quizPretest) {
+    pretestScore = Math.round(quizPretest.score / 100);
+  }
+
+  return {
+    isUnlocked: info.hasPretest && info.hasLesson && info.hasAll10Levels,
+    hasPretest: info.hasPretest,
+    hasLesson: info.hasLesson,
+    hasAll10Levels: info.hasAll10Levels,
+    passedLevelsCount: info.passedLevelsCount,
+    missingLevels,
+    pretestScore
   };
 }
 

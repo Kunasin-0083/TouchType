@@ -28,7 +28,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'home',
     targetKeysTh: THAI_HOME_ROW_KEYS,
     targetKeysEn: EN_HOME_ROW_KEYS,
-    targetAccuracy: 80,
+    targetAccuracy: 60,
     minWpm: 12,
     timeLimitSeconds: 60,
     wordCount: 12
@@ -42,7 +42,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'fingers',
     targetKeysTh: ['ฟ', 'ห', 'ก', 'ด', '่', 'า', 'ส', 'ว'],
     targetKeysEn: ['a', 's', 'd', 'f', 'j', 'k', 'l', ';'],
-    targetAccuracy: 82,
+    targetAccuracy: 63,
     minWpm: 15,
     timeLimitSeconds: 60,
     wordCount: 14
@@ -56,7 +56,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'upper',
     targetKeysTh: THAI_UPPER_ROW_KEYS,
     targetKeysEn: EN_UPPER_ROW_KEYS,
-    targetAccuracy: 85,
+    targetAccuracy: 65,
     minWpm: 16,
     timeLimitSeconds: 60,
     wordCount: 14
@@ -70,7 +70,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'lower',
     targetKeysTh: THAI_LOWER_ROW_KEYS,
     targetKeysEn: EN_LOWER_ROW_KEYS,
-    targetAccuracy: 85,
+    targetAccuracy: 68,
     minWpm: 16,
     timeLimitSeconds: 60,
     wordCount: 14
@@ -84,7 +84,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'all',
     targetKeysTh: [...THAI_HOME_ROW_KEYS, ...THAI_UPPER_ROW_KEYS, ...THAI_LOWER_ROW_KEYS],
     targetKeysEn: [...EN_HOME_ROW_KEYS, ...EN_UPPER_ROW_KEYS, ...EN_LOWER_ROW_KEYS],
-    targetAccuracy: 85,
+    targetAccuracy: 70,
     minWpm: 18,
     timeLimitSeconds: 70,
     wordCount: 16
@@ -98,7 +98,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'words_easy',
     targetKeysTh: [],
     targetKeysEn: [],
-    targetAccuracy: 88,
+    targetAccuracy: 72,
     minWpm: 20,
     timeLimitSeconds: 60,
     wordCount: 16
@@ -112,7 +112,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'words_med',
     targetKeysTh: [],
     targetKeysEn: [],
-    targetAccuracy: 90,
+    targetAccuracy: 75,
     minWpm: 24,
     timeLimitSeconds: 75,
     wordCount: 15
@@ -126,7 +126,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'words_hard',
     targetKeysTh: [],
     targetKeysEn: [],
-    targetAccuracy: 90,
+    targetAccuracy: 78,
     minWpm: 26,
     timeLimitSeconds: 80,
     wordCount: 12
@@ -140,7 +140,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'sentences',
     targetKeysTh: [],
     targetKeysEn: [],
-    targetAccuracy: 92,
+    targetAccuracy: 80,
     minWpm: 28,
     timeLimitSeconds: 90,
     wordCount: 4
@@ -154,7 +154,7 @@ export const LEVELS_CONFIG: LevelConfig[] = [
     category: 'speed',
     targetKeysTh: [],
     targetKeysEn: [],
-    targetAccuracy: 94,
+    targetAccuracy: 85,
     minWpm: 32,
     timeLimitSeconds: 90,
     wordCount: 6

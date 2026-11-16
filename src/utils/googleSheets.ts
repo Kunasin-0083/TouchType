@@ -172,10 +172,24 @@ export const AVATAR_GRADIENTS = [
 ];
 
 export function getLocalUsers(): User[] {
+  const defaultTeacher: User = {
+    uid: 'teacher_01',
+    username: 'teacher',
+    studentId: 'TEACHER',
+    fullName: 'อาจารย์ผู้สอน ประจำวิชาพิมพ์สัมผัส',
+    classroom: 'ผู้สอน',
+    displayName: 'ครูผู้สอน',
+    role: 'teacher',
+    avatar: '',
+    avatarBg: 'from-indigo-500 to-purple-600',
+    createdAt: new Date().toISOString()
+  };
+
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_USERS_KEY);
     if (!raw) {
       const seedUsers: User[] = [
+        defaultTeacher,
         {
           uid: 'std_66309010001',
           username: '66309010001',
@@ -204,9 +218,26 @@ export function getLocalUsers(): User[] {
       localStorage.setItem(LOCAL_STORAGE_USERS_KEY, JSON.stringify(seedUsers));
       return seedUsers;
     }
-    return JSON.parse(raw);
+    const parsed: User[] = JSON.parse(raw).map((u: User) => {
+      if (
+        u &&
+        (u.username?.toLowerCase() === 'teacher' || u.studentId?.toLowerCase() === 'teacher') &&
+        u.role !== 'teacher' &&
+        u.role !== 'admin'
+      ) {
+        return { ...u, role: 'teacher' as const };
+      }
+      return u;
+    });
+    const hasTeacher = parsed.some(u => u.role === 'teacher' || u.role === 'admin' || u.username?.toLowerCase() === 'teacher');
+    if (!hasTeacher) {
+      const updated = [defaultTeacher, ...parsed];
+      localStorage.setItem(LOCAL_STORAGE_USERS_KEY, JSON.stringify(updated));
+      return updated;
+    }
+    return parsed;
   } catch {
-    return [];
+    return [defaultTeacher];
   }
 }
 
@@ -224,19 +255,14 @@ export function getCurrentUser(): User | null {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_CURRENT_USER);
     if (!raw) {
-      // Default guest user
-      const guest: User = {
-        uid: 'guest_default',
-        username: 'guest',
-        displayName: 'ผู้เล่นทั่วไป (Guest)',
-        avatar: '',
-        avatarBg: 'from-cyan-500 to-blue-600',
-        createdAt: new Date().toISOString()
-      };
-      localStorage.setItem(LOCAL_STORAGE_CURRENT_USER, JSON.stringify(guest));
-      return guest;
+      return null;
     }
     const parsed = JSON.parse(raw);
+    const isTeacherAccount = parsed?.role === 'teacher' || parsed?.role === 'admin';
+    if (!parsed || (!parsed.studentId && !isTeacherAccount) || parsed.uid === 'guest_default' || parsed.username === 'guest') {
+      localStorage.removeItem(LOCAL_STORAGE_CURRENT_USER);
+      return null;
+    }
     if (parsed.avatar && !parsed.avatar.startsWith('data:image') && !parsed.avatar.startsWith('http')) {
       parsed.avatar = '';
     }
@@ -435,10 +461,35 @@ export function saveLocalScore(score: ScoreRecord) {
   }
 }
 
-export async function sendToAppsScript(payload: Record<string, unknown>): Promise<{ success: boolean; data?: any; error?: string }> {
+export function deleteLocalScore(scoreId: string) {
+  try {
+    const list = getLocalScores().filter(s => s.scoreId !== scoreId);
+    localStorage.setItem(LOCAL_STORAGE_SCORES_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
+export function clearStudentScores(uid: string, displayName?: string) {
+  try {
+    const list = getLocalScores().filter(s => {
+      if (s.uid === uid) return false;
+      if (displayName && s.displayName === displayName) return false;
+      return true;
+    });
+    localStorage.setItem(LOCAL_STORAGE_SCORES_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
+export async function sendToAppsScript(
+  payload: Record<string, unknown>,
+  timeoutMs: number = 8000
+): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     const response = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
@@ -470,6 +521,8 @@ export interface StudentRegisterPayload {
   password: string;
   avatar?: string;
   avatarBg?: string;
+  role?: 'student' | 'teacher' | 'admin';
+  autoLogin?: boolean;
 }
 
 const LOCAL_STORAGE_PASSWORDS_KEY = 'touch_typing_passwords_v2';
@@ -477,12 +530,21 @@ const LOCAL_STORAGE_PASSWORDS_KEY = 'touch_typing_passwords_v2';
 function getLocalPasswords(): Record<string, string> {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_PASSWORDS_KEY);
-    return raw ? JSON.parse(raw) : {
-      '66309010001': '1234',
-      '66309010002': '1234'
-    };
+    if (!raw) {
+      return {
+        'teacher': '1234',
+        '66309010001': '1234',
+        '66309010002': '1234'
+      };
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed['teacher']) {
+      parsed['teacher'] = '1234';
+    }
+    return parsed;
   } catch {
     return {
+      'teacher': '1234',
       '66309010001': '1234',
       '66309010002': '1234'
     };
@@ -506,9 +568,10 @@ export async function apiRegisterStudent(
   const cleanFullName = payload.fullName.trim();
   const cleanDisplayName = (payload.displayName || cleanFullName.split(' ')[0] || cleanId).trim();
   const cleanClassroom = (payload.classroom || '').trim();
+  const role = payload.role || 'student';
 
   if (!cleanId) {
-    return { success: false, message: 'กรุณาระบุรหัสนักเรียน' };
+    return { success: false, message: 'กรุณาระบุรหัสนักเรียนหรือรหัสผู้ใช้งาน' };
   }
   if (!cleanFullName) {
     return { success: false, message: 'กรุณาระบุชื่อ-นามสกุล' };
@@ -525,26 +588,28 @@ export async function apiRegisterStudent(
         u.username.toLowerCase() === cleanId.toLowerCase()
     )
   ) {
-    return { success: false, message: `รหัสนักเรียน ${cleanId} มีในระบบแล้ว กรุณาเข้าสู่ระบบ` };
+    return { success: false, message: `รหัสผู้ใช้งาน ${cleanId} มีในระบบแล้ว กรุณาเข้าสู่ระบบ` };
   }
 
   const newUser: User = {
-    uid: 'std_' + cleanId + '_' + Date.now().toString(36),
+    uid: (role === 'teacher' ? 'teacher_' : 'std_') + cleanId + '_' + Date.now().toString(36),
     username: cleanId.toLowerCase(),
     studentId: cleanId,
     fullName: cleanFullName,
     classroom: cleanClassroom,
     displayName: cleanDisplayName,
     avatar: payload.avatar || '',
-    avatarBg: payload.avatarBg || 'from-cyan-500 to-blue-600',
-    role: 'student',
+    avatarBg: payload.avatarBg || (role === 'teacher' ? 'from-indigo-500 to-purple-600' : 'from-cyan-500 to-blue-600'),
+    role,
     createdAt: new Date().toISOString()
   };
 
   saveLocalUser(newUser);
   saveLocalPassword(cleanId, payload.password);
   saveLocalPassword(newUser.username, payload.password);
-  setCurrentUser(newUser);
+  if (payload.autoLogin !== false) {
+    setCurrentUser(newUser);
+  }
 
   sendToAppsScript({
     action: 'register',
@@ -556,6 +621,7 @@ export async function apiRegisterStudent(
     displayName: cleanDisplayName,
     avatar: newUser.avatar,
     avatarBg: newUser.avatarBg,
+    role,
     uid: newUser.uid
   }).catch(() => {});
 
@@ -590,21 +656,64 @@ export async function apiLoginUser(
   const cleanId = studentIdOrUsername.trim().toLowerCase();
 
   if (!cleanId) {
-    return { success: false, message: 'กรุณากรอกรหัสนักเรียน' };
+    return { success: false, message: 'กรุณากรอกรหัสนักเรียนหรือรหัสครูผู้สอน' };
   }
   if (!password) {
     return { success: false, message: 'กรุณากรอกรหัสผ่าน' };
   }
 
+  const localUsers = getLocalUsers();
+  const localMatch = localUsers.find(
+    u =>
+      (u.studentId && u.studentId.toLowerCase() === cleanId) ||
+      u.username.toLowerCase() === cleanId
+  );
+
+  // Local-first instant verification for registered/seeded accounts (teachers & students)
+  if (localMatch) {
+    const passwords = getLocalPasswords();
+    const storedPass =
+      passwords[cleanId] ||
+      (localMatch.studentId ? passwords[localMatch.studentId.toLowerCase()] : undefined);
+
+    if (storedPass ? storedPass === password : password === '1234') {
+      if (localMatch.avatar && !localMatch.avatar.startsWith('data:image') && !localMatch.avatar.startsWith('http')) {
+        localMatch.avatar = '';
+      }
+      if (!localMatch.avatarBg) {
+        localMatch.avatarBg = localMatch.role === 'teacher' ? 'from-indigo-500 to-purple-600' : 'from-cyan-500 to-blue-600';
+      }
+      setCurrentUser(localMatch);
+      return {
+        success: true,
+        user: localMatch,
+        message: localMatch.role === 'teacher' || localMatch.role === 'admin'
+          ? 'เข้าสู่ระบบครูผู้สอนสำเร็จ'
+          : 'เข้าสู่ระบบสำเร็จ'
+      };
+    }
+    return { success: false, message: 'รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง' };
+  }
+
+  // Fallback to Google Sheets lookup only when account is not cached locally (fast 2.5s timeout)
   try {
-    const res = await sendToAppsScript({
-      action: 'login',
-      username: cleanId,
-      studentId: cleanId,
-      password: password
-    });
+    const res = await sendToAppsScript(
+      {
+        action: 'login',
+        username: cleanId,
+        studentId: cleanId,
+        password: password
+      },
+      2500
+    );
 
     if (res.success && res.data && res.data.user) {
+      const remoteRole =
+        res.data.user.role === 'teacher' || cleanId === 'teacher'
+          ? 'teacher'
+          : res.data.user.role === 'admin' || cleanId === 'admin'
+          ? 'admin'
+          : 'student';
       const remoteUser: User = {
         uid: res.data.user.uid,
         username: res.data.user.username || cleanId,
@@ -612,9 +721,13 @@ export async function apiLoginUser(
         fullName: res.data.user.fullName || res.data.user.displayName,
         classroom: res.data.user.classroom || 'ปวช.3',
         displayName: res.data.user.displayName,
-        avatar: (res.data.user.avatar && (res.data.user.avatar.startsWith('data:image') || res.data.user.avatar.startsWith('http'))) ? res.data.user.avatar : '',
+        avatar:
+          res.data.user.avatar &&
+          (res.data.user.avatar.startsWith('data:image') || res.data.user.avatar.startsWith('http'))
+            ? res.data.user.avatar
+            : '',
         avatarBg: res.data.user.avatarBg || 'from-cyan-500 to-blue-600',
-        role: cleanId === 'admin' ? 'admin' : 'student',
+        role: remoteRole,
         createdAt: res.data.user.createdAt || new Date().toISOString()
       };
       saveLocalUser(remoteUser);
@@ -623,36 +736,12 @@ export async function apiLoginUser(
       return { success: true, user: remoteUser, message: 'เข้าสู่ระบบสำเร็จ' };
     }
   } catch {
-    // fallback to local verification
-  }
-
-  const localUsers = getLocalUsers();
-  const match = localUsers.find(
-    u =>
-      (u.studentId && u.studentId.toLowerCase() === cleanId) ||
-      u.username.toLowerCase() === cleanId
-  );
-
-  if (match) {
-    const passwords = getLocalPasswords();
-    const storedPass = passwords[cleanId] || (match.studentId ? passwords[match.studentId.toLowerCase()] : undefined);
-
-    // If password matches or if it's default initial user password
-    if (!storedPass || storedPass === password || password === '1234') {
-      if (match.avatar && !match.avatar.startsWith('data:image') && !match.avatar.startsWith('http')) {
-        match.avatar = '';
-      }
-      if (!match.avatarBg) match.avatarBg = 'from-cyan-500 to-blue-600';
-      setCurrentUser(match);
-      return { success: true, user: match, message: 'เข้าสู่ระบบสำเร็จ (ยินดีต้อนรับกลับ)' };
-    } else {
-      return { success: false, message: 'รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง' };
-    }
+    // ignore remote lookup error
   }
 
   return {
     success: false,
-    message: `ไม่พบข้อมูลรหัสนักเรียน ${studentIdOrUsername} ในระบบ กรุณาตรวจสอบหรือกดสมัครสมาชิกใหม่`
+    message: `ไม่พบข้อมูลรหัสผู้ใช้งาน ${studentIdOrUsername} ในระบบ กรุณาตรวจสอบหรือกดสมัครสมาชิกใหม่`
   };
 }
 

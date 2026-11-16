@@ -9,7 +9,7 @@ export interface User {
   fullName?: string;
   classroom?: string;
   displayName: string;
-  role?: 'student' | 'admin';
+  role?: 'student' | 'teacher' | 'admin';
   avatar?: string;
   avatarBg?: string;
   createdAt: string;
@@ -61,6 +61,7 @@ export interface LevelConfig {
 export interface LessonConfig {
   id: number;
   title: string;
+  shortTitle?: string;
   subtitle: string;
   theory: string[];
   keyPoints: string[];

@@ -9,10 +9,15 @@ import {
   KeyRound,
   IdCard,
   UserCheck,
-  Trash2
+  Trash2,
+  GraduationCap,
+  ShieldCheck,
+  Eye,
+  EyeOff,
+  ArrowLeft
 } from 'lucide-react';
 import { User } from '../types';
-import { apiLoginUser, apiRegisterStudent } from '../utils/googleSheets';
+import { apiLoginUser, apiRegisterStudent, setCurrentUser } from '../utils/googleSheets';
 import { processAvatarFile } from '../utils/imageUpload';
 import { useTheme } from '../context/ThemeContext';
 import { UserAvatar } from './UserAvatar';
@@ -28,11 +33,16 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
   onAuthSuccess,
   onNavigateHome
 }) => {
-  const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
+  const [activeTab, setActiveTab] = useState<'login' | 'register' | 'teacher'>('login');
 
-  // Login form state
+  // Student Login form state
   const [loginStudentId, setLoginStudentId] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+
+  // Teacher Login form state
+  const [teacherUsername, setTeacherUsername] = useState('');
+  const [teacherPassword, setTeacherPassword] = useState('');
+  const [showTeacherPass, setShowTeacherPass] = useState(false);
 
   // Register form state
   const [regStudentId, setRegStudentId] = useState('');
@@ -88,14 +98,56 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
     }
 
     setIsLoading(true);
-    const res = await apiLoginUser(cleanId, loginPassword);
-    setIsLoading(false);
+    try {
+      const res = await apiLoginUser(cleanId, loginPassword);
 
-    if (res.success && res.user) {
-      setSuccessMsg(`ยินดีต้อนรับ ${res.user.displayName} เข้าสู่ระบบสำเร็จ`);
-      onAuthSuccess(res.user);
-    } else {
-      setErrorMsg(res.message || 'รหัสนักเรียนหรือรหัสผ่านไม่ถูกต้อง');
+      if (res.success && res.user) {
+        setSuccessMsg(`ยินดีต้อนรับ ${res.user.displayName} เข้าสู่ระบบสำเร็จ`);
+        onAuthSuccess(res.user);
+      } else {
+        setErrorMsg(res.message || 'รหัสนักเรียนหรือรหัสผ่านไม่ถูกต้อง');
+      }
+    } catch {
+      setErrorMsg('เกิดข้อผิดพลาดในการเข้าสู่ระบบ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleTeacherLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    const cleanId = teacherUsername.trim();
+    if (!cleanId) {
+      setErrorMsg('กรุณากรอกรหัสผู้ใช้งานสำหรับครู');
+      return;
+    }
+    if (!teacherPassword) {
+      setErrorMsg('กรุณากรอกรหัสผ่าน');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const res = await apiLoginUser(cleanId, teacherPassword);
+
+      if (res.success && res.user) {
+        if (res.user.role !== 'teacher' && res.user.role !== 'admin') {
+          setCurrentUser(null);
+          setErrorMsg('บัญชีนี้ไม่มีสิทธิ์ครูผู้สอน กรุณาเข้าสู่ระบบที่หน้าสำหรับนักเรียน');
+          return;
+        }
+        setSuccessMsg(`ยินดีต้อนรับ ${res.user.displayName} เข้าสู่แดชบอร์ดครูผู้สอน`);
+        onAuthSuccess(res.user);
+      } else {
+        setErrorMsg(res.message || 'รหัสผู้ใช้งานหรือรหัสผ่านครูไม่ถูกต้อง');
+      }
+    } catch {
+      setErrorMsg('เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -130,23 +182,31 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
     }
 
     setIsLoading(true);
-    const finalAvatar = uploadedPhoto || '';
-    const res = await apiRegisterStudent({
-      studentId: cleanId,
-      fullName: cleanName,
-      classroom: regClassroom,
-      displayName: cleanNick,
-      password: regPassword,
-      avatar: finalAvatar,
-      avatarBg: uploadedPhoto ? 'from-slate-700 to-slate-900' : 'from-cyan-500 to-blue-600'
-    });
-    setIsLoading(false);
+    try {
+      const finalAvatar = uploadedPhoto || '';
+      const res = await apiRegisterStudent({
+        studentId: cleanId,
+        fullName: cleanName,
+        classroom: regClassroom,
+        displayName: cleanNick,
+        password: regPassword,
+        avatar: finalAvatar,
+        avatarBg: uploadedPhoto
+          ? 'from-slate-700 to-slate-900'
+          : 'from-cyan-500 to-blue-600',
+        role: 'student'
+      });
 
-    if (res.success && res.user) {
-      setSuccessMsg(`สมัครสมาชิกสำเร็จ! ยินดีต้อนรับคุณ ${res.user.displayName}`);
-      onAuthSuccess(res.user);
-    } else {
-      setErrorMsg(res.message || 'ไม่สามารถสมัครสมาชิกได้ กรุณาลองใหม่อีกครั้ง');
+      if (res.success && res.user) {
+        setSuccessMsg(`สมัครสมาชิกสำเร็จ! ยินดีต้อนรับคุณ ${res.user.displayName}`);
+        onAuthSuccess(res.user);
+      } else {
+        setErrorMsg(res.message || 'ไม่สามารถสมัครสมาชิกได้ กรุณาลองใหม่อีกครั้ง');
+      }
+    } catch {
+      setErrorMsg('เกิดข้อผิดพลาดในการสมัครสมาชิก กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -162,14 +222,30 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
             : 'bg-white border-slate-200/90 shadow-slate-200/50'
         }`}
       >
-        <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-tr from-cyan-500 via-sky-500 to-blue-600 flex items-center justify-center text-white text-3xl shadow-lg shadow-cyan-500/25">
-          ⌨️
+        <div
+          className={`w-16 h-16 mx-auto mb-4 rounded-2xl flex items-center justify-center text-white shadow-lg ${
+            activeTab === 'teacher'
+              ? 'bg-gradient-to-tr from-indigo-600 via-violet-600 to-blue-600 shadow-indigo-500/25'
+              : 'bg-gradient-to-tr from-cyan-500 via-sky-500 to-blue-600 shadow-cyan-500/25'
+          }`}
+        >
+          {activeTab === 'teacher' ? (
+            <GraduationCap className="w-8 h-8" />
+          ) : (
+            <span className="text-3xl">⌨️</span>
+          )}
         </div>
         <h1 className={`text-2xl sm:text-3xl font-extrabold ${isDark ? 'text-white' : 'text-slate-900'}`}>
-          {activeTab === 'login' ? 'เข้าสู่ระบบ' : 'สมัครสมาชิกใหม่'}
+          {activeTab === 'teacher'
+            ? 'เข้าสู่ระบบสำหรับครูผู้สอน'
+            : activeTab === 'login'
+            ? 'เข้าสู่ระบบนักเรียน'
+            : 'สมัครสมาชิกใหม่'}
         </h1>
         <p className={`text-sm mt-2 max-w-md mx-auto ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
-          บันทึกคะแนนการฝึกพิมพ์ แบบทดสอบก่อน-หลังเรียน และคะแนนประลองจัดอันดับลง Google Sheets
+          {activeTab === 'teacher'
+            ? 'เข้าสู่ระบบเพื่อดูแดชบอร์ด ติดตามพัฒนาการ และตรวจสอบผลคะแนนนักเรียนทั้งหมด'
+            : 'บันทึกคะแนนการฝึกพิมพ์ แบบทดสอบก่อน-หลังเรียน และคะแนนประลองจัดอันดับลง Google Sheets'}
         </p>
 
         {isCurrentLoggedIn && (
@@ -193,49 +269,69 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
         }`}
       >
         {/* Mode Switch Tabs */}
-        <div
-          className={`flex p-1.5 rounded-2xl border mb-6 ${
-            isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-100 border-slate-200'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('login');
-              setErrorMsg(null);
-              setSuccessMsg(null);
-            }}
-            className={`flex-1 py-3 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'login'
-                ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md'
-                : isDark
-                ? 'text-slate-400 hover:text-white'
-                : 'text-slate-600 hover:text-slate-900'
+        {activeTab !== 'teacher' ? (
+          <div
+            className={`flex p-1.5 rounded-2xl border mb-6 ${
+              isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-100 border-slate-200'
             }`}
           >
-            <LogIn className="w-4 h-4" />
-            <span>เข้าสู่ระบบ (Login)</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('login');
+                setErrorMsg(null);
+                setSuccessMsg(null);
+              }}
+              className={`flex-1 py-3 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                activeTab === 'login'
+                  ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md'
+                  : isDark
+                  ? 'text-slate-400 hover:text-white'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <LogIn className="w-4 h-4" />
+              <span>เข้าสู่ระบบ (Login)</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('register');
-              setErrorMsg(null);
-              setSuccessMsg(null);
-            }}
-            className={`flex-1 py-3 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'register'
-                ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md'
-                : isDark
-                ? 'text-slate-400 hover:text-white'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>สมัครสมาชิก (Register)</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('register');
+                setErrorMsg(null);
+                setSuccessMsg(null);
+              }}
+              className={`flex-1 py-3 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                activeTab === 'register'
+                  ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md'
+                  : isDark
+                  ? 'text-slate-400 hover:text-white'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>สมัครสมาชิก (Register)</span>
+            </button>
+          </div>
+        ) : (
+          <div className={`flex items-center justify-between mb-6 pb-4 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('login');
+                setErrorMsg(null);
+                setSuccessMsg(null);
+              }}
+              className={`inline-flex items-center gap-1.5 text-xs font-semibold transition-colors ${
+                isDark ? 'text-slate-300 hover:text-cyan-300' : 'text-slate-600 hover:text-cyan-700'
+              }`}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>กลับหน้าเข้าสู่ระบบนักเรียน</span>
+            </button>
+            <span className="text-xs font-bold text-indigo-500">ส่วนสำหรับครูผู้สอน</span>
+          </div>
+        )}
 
         {/* Notifications */}
         {errorMsg && (
@@ -257,14 +353,14 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
           <form onSubmit={handleLoginSubmit} className="space-y-4">
             <div>
               <label className={`block text-xs font-bold mb-1.5 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
-                รหัสนักเรียน *
+                รหัสนักเรียน / รหัสผู้ใช้งาน *
               </label>
               <div className="relative">
                 <input
                   type="text"
                   value={loginStudentId}
                   onChange={e => setLoginStudentId(e.target.value)}
-                  placeholder="กรอกรหัสนักเรียน เช่น 66309010001"
+                  placeholder="เช่น 66309010001"
                   className={`w-full px-4 py-3 rounded-xl border font-mono text-sm focus:outline-none focus:border-cyan-500 transition-colors ${
                     isDark
                       ? 'bg-slate-950 border-slate-800 text-white placeholder-slate-500'
@@ -321,6 +417,116 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
                 className="text-xs text-cyan-400 hover:underline"
               >
                 ยังไม่มีบัญชีใช่หรือไม่? สมัครสมาชิกใหม่ที่นี่
+              </button>
+            </div>
+
+            {/* Teacher Login Trigger Box (Bottom) */}
+            <div
+              className={`mt-3 p-3.5 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+                isDark
+                  ? 'bg-indigo-950/30 border-indigo-500/30 text-indigo-200'
+                  : 'bg-indigo-50/80 border-indigo-200 text-indigo-900'
+              }`}
+            >
+              <div className="flex items-center gap-2.5 text-xs">
+                <GraduationCap className="w-4 h-4 text-indigo-500 shrink-0" />
+                <div className="font-bold">สำหรับครูผู้สอน</div>
+              </div>
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => {
+                  setActiveTab('teacher');
+                  setErrorMsg(null);
+                  setSuccessMsg(null);
+                }}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold whitespace-nowrap shrink-0 transition-colors"
+              >
+                เข้าสู่ระบบครูผู้สอน
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* 1B. TEACHER LOGIN FORM */}
+        {activeTab === 'teacher' && (
+          <form onSubmit={handleTeacherLoginSubmit} className="space-y-4">
+            <div
+              className={`p-3.5 rounded-2xl border flex items-center gap-2.5 text-xs ${
+                isDark
+                  ? 'bg-indigo-950/30 border-indigo-500/30 text-indigo-200'
+                  : 'bg-indigo-50 border-indigo-200 text-indigo-900'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-indigo-500 shrink-0" />
+              <span>เข้าสู่ระบบด้วยบัญชีครูผู้สอนเพื่อเปิดดูแดชบอร์ดและข้อมูลผลคะแนนนักเรียน</span>
+            </div>
+
+            <div>
+              <label className={`block text-xs font-bold mb-1.5 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                รหัสผู้ใช้งานครู *
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={teacherUsername}
+                  onChange={e => setTeacherUsername(e.target.value)}
+                  placeholder="กรอกรหัสผู้ใช้งานสำหรับครู"
+                  autoComplete="username"
+                  className={`w-full px-4 py-3 rounded-xl border font-mono text-sm focus:outline-none focus:border-indigo-500 transition-colors ${
+                    isDark
+                      ? 'bg-slate-950 border-slate-800 text-white placeholder-slate-500'
+                      : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                  }`}
+                  required
+                />
+                <IdCard className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+
+            <div>
+              <label className={`block text-xs font-bold mb-1.5 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                รหัสผ่าน *
+              </label>
+              <div className="relative">
+                <input
+                  type={showTeacherPass ? 'text' : 'password'}
+                  value={teacherPassword}
+                  onChange={e => setTeacherPassword(e.target.value)}
+                  placeholder="กรอกรหัสผ่าน"
+                  autoComplete="current-password"
+                  className={`w-full pl-4 pr-11 py-3 rounded-xl border text-sm focus:outline-none focus:border-indigo-500 transition-colors ${
+                    isDark
+                      ? 'bg-slate-950 border-slate-800 text-white placeholder-slate-500'
+                      : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                  }`}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowTeacherPass(v => !v)}
+                  aria-label={showTeacherPass ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
+                >
+                  {showTeacherPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-indigo-600 via-violet-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold text-sm shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2"
+              >
+                {isLoading ? (
+                  <span className="animate-pulse">กำลังตรวจสอบสิทธิ์ครูผู้สอน...</span>
+                ) : (
+                  <>
+                    <GraduationCap className="w-4 h-4" />
+                    <span>เข้าสู่ระบบแดชบอร์ดครู</span>
+                  </>
+                )}
               </button>
             </div>
           </form>
