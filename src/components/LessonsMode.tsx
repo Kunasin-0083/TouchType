@@ -14,7 +14,7 @@ import { LESSONS_DATA } from '../data/lessons';
 import { TypingArea } from './TypingArea';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { useTheme } from '../context/ThemeContext';
-import { saveLocalScore } from '../utils/googleSheets';
+import { apiSaveScore } from '../utils/googleSheets';
 
 interface LessonsModeProps {
   language: Language;
@@ -103,7 +103,7 @@ export const LessonsMode: React.FC<LessonsModeProps> = ({ language, user }) => {
       createdAt: new Date().toISOString()
     };
 
-    saveLocalScore(record);
+    apiSaveScore(record).catch(() => {});
   };
 
   const handleNextDrill = useCallback(() => {

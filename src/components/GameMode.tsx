@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowRight,
   Star,
@@ -12,7 +12,14 @@ import { LEVELS_CONFIG, generateLevelText } from '../data/levels';
 import { TypingArea } from './TypingArea';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { ResultModal } from './ResultModal';
-import { apiSaveScore, getLocalScores } from '../utils/googleSheets';
+import {
+  apiSaveScore,
+  getLocalScores,
+  getUserMedalProfile,
+  isRecordOwnedByUser,
+  subscribeUserDataUpdates,
+  getAccountKey
+} from '../utils/googleSheets';
 import { useTheme } from '../context/ThemeContext';
 
 interface GameModeProps {
@@ -33,32 +40,51 @@ export const GameMode: React.FC<GameModeProps> = ({
   const [completedRecord, setCompletedRecord] = useState<ScoreRecord | null>(null);
   const { isDark } = useTheme();
 
+  const [dataRevision, setDataRevision] = useState(0);
+
+  useEffect(() => {
+    return subscribeUserDataUpdates(() => {
+      setDataRevision(prev => prev + 1);
+    });
+  }, []);
+
+  const accountKey = getAccountKey(user);
+  const unlockedStorageKey = accountKey
+    ? `touch_typing_unlocked_level_${accountKey}`
+    : 'touch_typing_unlocked_level';
+
   const [unlockedLevel, setUnlockedLevel] = useState<number>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('touch_typing_unlocked_level');
+      const saved = localStorage.getItem(unlockedStorageKey);
       return saved ? parseInt(saved, 10) : 10;
     }
     return 10;
   });
 
-    const passedLevelIds = React.useMemo(() => {
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(unlockedStorageKey);
+      setUnlockedLevel(saved ? parseInt(saved, 10) : 10);
+    }
+  }, [unlockedStorageKey]);
+
+  const passedLevelIds = React.useMemo(() => {
     const scores = getLocalScores();
     const set = new Set<number>();
+    const medalProfile = getUserMedalProfile(user);
+    (medalProfile?.passedLevels || []).forEach(lvl => {
+      if (lvl >= 1 && lvl <= 10) set.add(lvl);
+    });
     scores.forEach(s => {
       if (s.gameMode !== 'game' || !s.passed) return;
-      if (
-        user &&
-        s.uid !== user.uid &&
-        s.uid !== user.studentId &&
-        s.displayName !== user.displayName
-      ) {
+      if (user && !isRecordOwnedByUser(s, user)) {
         return;
       }
       const id = Number(s.levelId);
       if (id >= 1 && id <= 10) set.add(id);
     });
     return set;
-  }, [user, completedRecord]);
+  }, [user, completedRecord, dataRevision]);
 
   // Start Level
   const handleStartLevel = (level: LevelConfig) => {
@@ -117,7 +143,7 @@ export const GameMode: React.FC<GameModeProps> = ({
     if (isPassed && selectedLevel.id >= unlockedLevel && selectedLevel.id < 10) {
       const nextUnlocked = selectedLevel.id + 1;
       setUnlockedLevel(nextUnlocked);
-      localStorage.setItem('touch_typing_unlocked_level', String(nextUnlocked));
+      localStorage.setItem(unlockedStorageKey, String(nextUnlocked));
     }
   };
 

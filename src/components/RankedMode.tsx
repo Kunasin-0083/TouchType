@@ -594,8 +594,24 @@ export const RankedMode: React.FC<RankedModeProps> = ({
                   </span>
                 </div>
 
+                {/* Quick Reset Button */}
+                <button
+                  type="button"
+                  onClick={() => handleStartMatch(selectedMode)}
+                  title="รีเซ็ตและเริ่มพิมพ์ชุดใหม่ทันที"
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all active:scale-95 ${
+                    isDark
+                      ? 'bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border-cyan-500/40'
+                      : 'bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border-cyan-300 shadow-2xs'
+                  }`}
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>รีเซ็ต</span>
+                </button>
+
                 {/* Exit Button */}
                 <button
+                  type="button"
                   onClick={() => {
                     isPlayingRef.current = false;
                     setIsPlaying(false);
@@ -717,17 +733,34 @@ export const RankedMode: React.FC<RankedModeProps> = ({
               })}
             </div>
 
-            {/* Footer bar with No-Backspace rule & Live counts */}
+            {/* Footer bar with No-Backspace rule, Live counts & Quick Reset */}
             <div className={`mt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-sans border-t pt-3 ${isDark ? 'border-slate-800/60 text-slate-400' : 'border-slate-200 text-slate-500'}`}>
               <span className="flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-rose-500 shrink-0" />
                 <span>กติกาประลอง: พิมพ์ผิดไม่สามารถลบหรือแก้ไขย้อนหลังได้</span>
               </span>
-              <span className="font-mono flex items-center gap-3">
-                <span className="text-emerald-500 font-bold">ถูก: {liveMetrics.correctCharacters}</span>
-                <span className="text-rose-500 font-bold">ผิด: {liveMetrics.incorrectCharacters}</span>
-                <span>ความคืบหน้า: {typedText.length} / {targetText.length} ({Math.round((typedText.length / Math.max(targetText.length, 1)) * 100)}%)</span>
-              </span>
+              <div className="flex items-center flex-wrap gap-3">
+                <span className="font-mono flex items-center gap-3">
+                  <span className="text-emerald-500 font-bold">ถูก: {liveMetrics.correctCharacters}</span>
+                  <span className="text-rose-500 font-bold">ผิด: {liveMetrics.incorrectCharacters}</span>
+                  <span>ความคืบหน้า: {typedText.length} / {targetText.length} ({Math.round((typedText.length / Math.max(targetText.length, 1)) * 100)}%)</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleStartMatch(selectedMode);
+                  }}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg font-bold border transition-all ${
+                    isDark
+                      ? 'bg-slate-800 hover:bg-slate-700 text-cyan-300 border-slate-700'
+                      : 'bg-slate-100 hover:bg-slate-200 text-cyan-700 border-slate-300'
+                  }`}
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>เริ่มใหม่</span>
+                </button>
+              </div>
             </div>
           </div>
 

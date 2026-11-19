@@ -23,6 +23,7 @@ import { soundManager } from '../utils/audio';
 import { useTheme } from '../context/ThemeContext';
 import { UserAvatar } from './UserAvatar';
 import { getPosttestUnlockStatus } from './MedalShowcase';
+import { subscribeUserDataUpdates } from '../utils/googleSheets';
 
 interface NavbarProps {
   currentTab: string;
@@ -79,12 +80,20 @@ export const Navbar: React.FC<NavbarProps> = ({
     }
   }, [currentTab]);
 
+  const [realtimeTick, setRealtimeTick] = React.useState(0);
+
+  useEffect(() => {
+    return subscribeUserDataUpdates(() => {
+      setRealtimeTick(prev => prev + 1);
+    });
+  }, []);
+
   const isTeacher = Boolean(user && (user.role === 'teacher' || user.role === 'admin'));
   const isAuthenticated = Boolean(user && (user.studentId || isTeacher) && user.username !== 'guest');
 
   const posttestStatus = React.useMemo(
     () => getPosttestUnlockStatus(user),
-    [currentTab, user]
+    [currentTab, user, realtimeTick]
   );
   const isPosttestLocked = !posttestStatus.isUnlocked;
 
@@ -436,6 +445,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <UserAvatar
                     avatar={user.avatar}
                     name={user.displayName || user.fullName || ''}
+                    seed={user.uid || user.studentId || user.displayName || ''}
                     gradient={user.avatarBg || 'from-cyan-500 to-blue-600'}
                     size="sm"
                   />

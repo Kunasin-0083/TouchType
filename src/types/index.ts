@@ -8,6 +8,7 @@ export interface User {
   studentId?: string;
   fullName?: string;
   classroom?: string;
+  classroomUpdatedAt?: string;
   displayName: string;
   role?: 'student' | 'teacher' | 'admin';
   avatar?: string;
@@ -19,6 +20,7 @@ export interface ScoreRecord {
   scoreId: string;
   uid: string;
   displayName: string;
+  classroom?: string;
   avatar?: string;
   avatarBg?: string;
   gameMode: GameModeType;
@@ -92,3 +94,63 @@ export interface KeyInfo {
   finger: FingerName;
   width?: number; // default 1
 }
+
+export interface EarnedMedalItem {
+  id: string;
+  category: 'grand' | 'activity' | 'level' | 'achievement';
+  title: string;
+  subtitle: string;
+  icon: string;
+  earnedAt: string;
+}
+
+export interface UserMedalProfile {
+  accountKey: string;
+  uid: string;
+  studentId: string;
+  displayName: string;
+  fullName: string;
+  classroom: string;
+  hasPretest: boolean;
+  hasLesson: boolean;
+  hasPosttest: boolean;
+  passedLevels: number[];
+  hasAll10Levels: boolean;
+  isGrandComplete: boolean;
+  achievementIds: string[];
+  earnedMedals: EarnedMedalItem[];
+  totalMedalsCount: number;
+  completionPercent: number;
+  bestScore: number;
+  bestWpm: number;
+  bestAccuracy: number;
+  updatedAt: string;
+}
+
+export interface PrePostComparisonRecord {
+  accountKey: string;
+  uid: string;
+  studentId: string;
+  displayName: string;
+  fullName: string;
+  classroom: string;
+  pretestQuizScore: number | null;
+  pretestQuizTotal: number;
+  pretestQuizPercent: number | null;
+  pretestQuizDate?: string;
+  posttestQuizScore: number | null;
+  posttestQuizTotal: number;
+  posttestQuizPercent: number | null;
+  posttestQuizDate?: string;
+  quizScoreDiff: number | null;
+  pretestTypingWpm: number | null;
+  pretestTypingAccuracy: number | null;
+  pretestTypingDate?: string;
+  posttestTypingWpm: number | null;
+  posttestTypingAccuracy: number | null;
+  posttestTypingDate?: string;
+  typingWpmDiff: number | null;
+  typingAccuracyDiff: number | null;
+  updatedAt: string;
+}
+

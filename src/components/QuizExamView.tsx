@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { PRETEST_QUESTIONS, POSTTEST_QUESTIONS, QuizQuestion } from '../data/quizQuestions';
 import { User, ScoreRecord } from '../types';
-import { apiSaveScore, getLocalScores } from '../utils/googleSheets';
+import { apiSaveScore, getLocalScores, getUserPrePostComparison, isRecordOwnedByUser } from '../utils/googleSheets';
 import { useTheme } from '../context/ThemeContext';
 
 interface QuizExamViewProps {
@@ -83,6 +83,16 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
     : LOCAL_POSTTEST_QUIZ_KEY;
 
   const getStoredQuizScore = (key: string): { score: number; total: number; date: string } | null => {
+    if (user) {
+      const comp = getUserPrePostComparison(user);
+      if (comp && comp.pretestQuizScore !== null) {
+        return {
+          score: comp.pretestQuizScore,
+          total: comp.pretestQuizTotal || 10,
+          date: comp.pretestQuizDate || comp.updatedAt
+        };
+      }
+    }
     try {
       const raw = localStorage.getItem(key);
       if (raw) return JSON.parse(raw);
@@ -92,13 +102,17 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
     if (user) {
       const match = getLocalScores().find(
         s =>
-          (s.uid === user.uid || s.displayName === user.displayName) &&
+          isRecordOwnedByUser(s, user) &&
           (s.gameMode === 'pretest' || s.testType === 'PRE_TEST') &&
           String(s.levelId || '').includes('quiz')
       );
       if (match) {
+        const computedScore =
+          match.totalCharacters === 10 && match.correctCharacters >= 0 && match.correctCharacters <= 10
+            ? match.correctCharacters
+            : Math.round(match.score / 100);
         return {
-          score: Math.round(match.score / 100),
+          score: computedScore,
           total: match.totalCharacters || 10,
           date: match.createdAt
         };
@@ -211,6 +225,7 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
       scoreId: 'quiz_' + Date.now().toString(36),
       uid: user ? user.uid : 'guest',
       displayName: user ? user.displayName : 'ผู้ทดสอบ ปวช.3',
+      classroom: user?.classroom || 'ทั่วไป',
       avatar: user?.avatar || '',
       avatarBg: user?.avatarBg || 'from-cyan-500 to-blue-600',
       gameMode: testType,
@@ -305,7 +320,7 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
             ผลการทดสอบ{testType === 'pretest' ? 'ก่อนเรียน (Pre-test)' : 'หลังเรียน (Post-test)'} ปวช.3
           </h2>
           <p className={`text-xs mt-1 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-            บันทึกคะแนนลง Google Sheets เรียบร้อยแล้ว
+            บันทึกคะแนนลง Google Sheets (Scores &amp; PrePostTests), หน้าโปรไฟล์ของคุณ และแดชบอร์ดครูผู้สอนเรียบร้อยแล้ว
           </p>
           <div
             className={`mt-3 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-bold border ${
@@ -431,6 +446,21 @@ export const QuizExamView: React.FC<QuizExamViewProps> = ({
               >
                 <span>ขั้นตอนถัดไป: ไปยังศูนย์การเรียนรู้</span>
                 <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {onNavigateTab && (
+              <button
+                type="button"
+                onClick={() => onNavigateTab('profile')}
+                className={`px-5 py-2.5 rounded-xl font-bold text-xs border transition-all flex items-center gap-1.5 ${
+                  isDark
+                    ? 'bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border-emerald-500/40'
+                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300'
+                }`}
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+                <span>ดูสรุปเทียบคะแนนในโปรไฟล์</span>
               </button>
             )}
 

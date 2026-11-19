@@ -400,7 +400,7 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
                 className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-cyan-500 via-sky-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2"
               >
                 {isLoading ? (
-                  <span className="animate-pulse">กำลังตรวจสอบข้อมูล...</span>
+                  <span className="animate-pulse">กำลังตรวจสอบบัญชีจาก Google Sheets...</span>
                 ) : (
                   <>
                     <LogIn className="w-4 h-4" />
@@ -732,7 +732,7 @@ export const StudentAuthView: React.FC<StudentAuthViewProps> = ({
                 className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold text-sm shadow-lg shadow-emerald-500/25 transition-all flex items-center justify-center gap-2"
               >
                 {isLoading ? (
-                  <span className="animate-pulse">กำลังบันทึกข้อมูล...</span>
+                  <span className="animate-pulse">กำลังบันทึกบัญชีลง Google Sheets...</span>
                 ) : (
                   <>
                     <UserPlus className="w-4 h-4" />

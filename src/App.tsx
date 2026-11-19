@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Navbar } from './components/Navbar';
 import { GameMode } from './components/GameMode';
 import { RankedMode } from './components/RankedMode';
@@ -10,10 +10,47 @@ import { StudentAuthView } from './components/StudentAuthView';
 import { TeacherDashboard } from './components/TeacherDashboard';
 import { AuthModal } from './components/AuthModal';
 import { AvatarSelectorModal } from './components/AvatarSelectorModal';
+import { GrandCompletionModal } from './components/GrandCompletionModal';
 import { Language, User } from './types';
-import { getCurrentUser, setCurrentUser } from './utils/googleSheets';
-import { getPosttestUnlockStatus } from './components/MedalShowcase';
+import {
+  getCurrentUser,
+  setCurrentUser,
+  apiSyncUserAccountData,
+  hydrateCurrentUserAvatar,
+  subscribeUserDataUpdates,
+  getLocalScores,
+  getUserMedalProfile,
+  isRecordOwnedByUser,
+  getAccountKey
+} from './utils/googleSheets';
+import { getPosttestUnlockStatus, getCurriculumCompletion } from './components/MedalShowcase';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
+
+const GRAND_CELEBRATION_SEEN_KEY = 'touch_typing_grand_celebrated_v1';
+
+function hasSeenGrandCelebration(accountKey: string): boolean {
+  if (!accountKey) return false;
+  try {
+    const raw = localStorage.getItem(GRAND_CELEBRATION_SEEN_KEY);
+    if (!raw) return false;
+    const map = JSON.parse(raw) as Record<string, string>;
+    return Boolean(map && map[accountKey]);
+  } catch {
+    return false;
+  }
+}
+
+function markGrandCelebrationSeen(accountKey: string) {
+  if (!accountKey) return;
+  try {
+    const raw = localStorage.getItem(GRAND_CELEBRATION_SEEN_KEY);
+    const map: Record<string, string> = raw ? JSON.parse(raw) : {};
+    map[accountKey] = new Date().toISOString();
+    localStorage.setItem(GRAND_CELEBRATION_SEEN_KEY, JSON.stringify(map));
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function MainApp() {
   const [user, setUser] = useState<User | null>(() => getCurrentUser());
@@ -27,6 +64,8 @@ function MainApp() {
   const [language, setLanguage] = useState<Language>('th');
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
+  const [isGrandCelebrationOpen, setIsGrandCelebrationOpen] = useState(false);
+  const [progressRevision, setProgressRevision] = useState(0);
   const { isDark } = useTheme();
 
   useEffect(() => {
@@ -34,15 +73,77 @@ function MainApp() {
     const isTeacherSession = Boolean(loggedUser && (loggedUser.role === 'teacher' || loggedUser.role === 'admin'));
     if (loggedUser && (loggedUser.studentId || isTeacherSession)) {
       setUser(loggedUser);
+      hydrateCurrentUserAvatar(loggedUser)
+        .then(hydrated => {
+          if (hydrated) setUser(hydrated);
+        })
+        .catch(() => {});
+      if (!isTeacherSession) {
+        apiSyncUserAccountData(loggedUser).catch(() => {});
+      }
     } else {
       setUser(null);
       setCurrentTab('auth');
     }
+
+    const unsubscribe = subscribeUserDataUpdates(() => {
+      setProgressRevision(prev => prev + 1);
+      const latest = getCurrentUser();
+      if (latest) {
+        setUser(prev => {
+          if (
+            prev &&
+            prev.uid === latest.uid &&
+            prev.avatar === latest.avatar &&
+            prev.avatarBg === latest.avatarBg &&
+            prev.displayName === latest.displayName &&
+            prev.classroom === latest.classroom &&
+            prev.classroomUpdatedAt === latest.classroomUpdatedAt
+          ) {
+            return prev;
+          }
+          return latest;
+        });
+      }
+    });
+    return () => unsubscribe();
   }, []);
+
+  const studentScores = useMemo(() => {
+    if (!isAuthenticated || isTeacher || !user) return [];
+    return getLocalScores().filter(s => isRecordOwnedByUser(s, user));
+  }, [isAuthenticated, isTeacher, user, progressRevision]);
+
+  const studentMedalProfile = useMemo(() => {
+    if (!isAuthenticated || isTeacher || !user) return null;
+    return getUserMedalProfile(user);
+  }, [isAuthenticated, isTeacher, user, progressRevision]);
+
+  const studentCompletion = useMemo(
+    () => getCurriculumCompletion(studentScores, studentMedalProfile),
+    [studentScores, studentMedalProfile]
+  );
+
+  // Auto-open celebratory popup the moment a student finishes all 4 curriculum pillars (100%)
+  useEffect(() => {
+    if (!isAuthenticated || isTeacher || !user || currentTab === 'auth') return;
+    if (!studentCompletion.isGrandComplete) return;
+
+    const accountKey = getAccountKey(user);
+    if (!accountKey || hasSeenGrandCelebration(accountKey)) return;
+
+    const timer = window.setTimeout(() => {
+      markGrandCelebrationSeen(accountKey);
+      setIsGrandCelebrationOpen(true);
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [isAuthenticated, isTeacher, user, currentTab, studentCompletion.isGrandComplete]);
 
   const handleLogout = () => {
     setCurrentUser(null);
     setUser(null);
+    setIsGrandCelebrationOpen(false);
     setCurrentTab('auth');
   };
 
@@ -82,10 +183,16 @@ function MainApp() {
             currentUser={user}
             onAuthSuccess={(newUser) => {
               setUser(newUser);
+              hydrateCurrentUserAvatar(newUser)
+                .then(hydrated => {
+                  if (hydrated) setUser(hydrated);
+                })
+                .catch(() => {});
               if (newUser.role === 'teacher' || newUser.role === 'admin') {
                 setCurrentTab('teacher');
                 return;
               }
+              apiSyncUserAccountData(newUser).catch(() => {});
               const status = getPosttestUnlockStatus(newUser);
               setCurrentTab(status.hasPretest ? 'profile' : 'pretest');
             }}
@@ -162,6 +269,9 @@ function MainApp() {
             user={user}
             onOpenAuth={() => setCurrentTab('auth')}
             onOpenAvatarModal={() => setIsAvatarModalOpen(true)}
+            onUserUpdated={(updatedUser) => setUser(updatedUser)}
+            onOpenGrandCelebration={() => setIsGrandCelebrationOpen(true)}
+            onNavigateTab={setCurrentTab}
           />
         )}
       </main>
@@ -211,6 +321,20 @@ function MainApp() {
           setUser(updatedUser);
         }}
       />
+
+      {/* 100% Curriculum Grand Completion Celebration Popup */}
+      {isAuthenticated && !isTeacher && (
+        <GrandCompletionModal
+          isOpen={isGrandCelebrationOpen}
+          onClose={() => setIsGrandCelebrationOpen(false)}
+          user={user}
+          completion={studentCompletion}
+          userScores={studentScores}
+          savedMedalProfile={studentMedalProfile}
+          isOnProfileTab={currentTab === 'profile'}
+          onGoToProfile={() => setCurrentTab('profile')}
+        />
+      )}
     </div>
   );
 }

@@ -1,13 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Trophy,
   Search,
   RefreshCw,
   Flame,
-  Camera
+  Camera,
+  X
 } from 'lucide-react';
 import { ScoreRecord, Language, User } from '../types';
-import { apiFetchLeaderboard, getLocalUsers } from '../utils/googleSheets';
+import {
+  apiFetchLeaderboard,
+  getLocalUsers,
+  isRecordOwnedByUser,
+  subscribeUserDataUpdates
+} from '../utils/googleSheets';
 import { useTheme } from '../context/ThemeContext';
 import { calculateRankTier } from './RankedMode';
 import { UserAvatar } from './UserAvatar';
@@ -29,9 +35,19 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [filterLang, setFilterLang] = useState<'all' | 'th' | 'en'>('all');
   const [filterMode, setFilterMode] = useState<'all' | 'speed_sprint' | 'championship_endurance' | 'sudden_death'>('all');
+  const [previewPlayer, setPreviewPlayer] = useState<{
+    displayName: string;
+    uid: string;
+    avatar: string;
+    avatarBg: string;
+    rankTier: string;
+    score: number;
+    netWpm: number;
+    accuracy: number;
+  } | null>(null);
   const { isDark } = useTheme();
 
-  const fetchScores = async () => {
+  const fetchScores = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await apiFetchLeaderboard();
@@ -43,11 +59,15 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchScores();
-  }, []);
+    const unsubscribe = subscribeUserDataUpdates(() => {
+      fetchScores();
+    });
+    return () => unsubscribe();
+  }, [fetchScores, user?.avatar, user?.avatarBg, user?.uid]);
 
   const getRecordMode = (item: ScoreRecord): 'speed_sprint' | 'championship_endurance' | 'sudden_death' => {
     if (item.championshipMode) return item.championshipMode;
@@ -67,41 +87,70 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
     return (item.displayName || 'guest').trim().toLowerCase();
   };
 
-  const isRowOwnedByCurrentUser = (item: ScoreRecord): boolean => {
-    if (!user) return false;
-    if (item.uid === user.uid) return true;
-    if (user.uid === 'guest_default' && item.uid === 'guest') return true;
-    if (
-      item.displayName &&
-      user.displayName &&
-      item.displayName.trim().toLowerCase() === user.displayName.trim().toLowerCase()
-    ) {
-      return true;
-    }
-    return false;
-  };
+  const isRowOwnedByCurrentUser = useCallback(
+    (item: ScoreRecord): boolean => {
+      if (!user) return false;
+      return isRecordOwnedByUser(item, user);
+    },
+    [user]
+  );
 
-  // Resolve most up-to-date profile picture & gradient for any score row
+  // Resolve most up-to-date profile picture & gradient for ANY player across users + all score rows
   const resolvePlayerAvatar = React.useMemo(() => {
     const localUsers = getLocalUsers();
+    const isValidImg = (av?: string) =>
+      Boolean(av && (av.startsWith('data:image') || av.startsWith('http') || av.startsWith('/')));
+
+    // Build latest non-empty avatar per player across ALL score rows (newest first)
+    const latestFromScores = new Map<string, { avatar: string; avatarBg: string }>();
+    const newestScores = [...scores].sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+    for (const s of newestScores) {
+      if (!isValidImg(s.avatar)) continue;
+      const entry = {
+        avatar: s.avatar!,
+        avatarBg: s.avatarBg || 'from-cyan-500 to-blue-600'
+      };
+      const uidKey = String(s.uid || '').trim().toLowerCase();
+      const nameKey = s.displayName ? `name:${s.displayName.trim().toLowerCase()}` : '';
+      if (uidKey && uidKey !== 'guest' && uidKey !== 'guest_default' && !latestFromScores.has(uidKey)) {
+        latestFromScores.set(uidKey, entry);
+      }
+      if (nameKey && !latestFromScores.has(nameKey)) {
+        latestFromScores.set(nameKey, entry);
+      }
+    }
+
     return (item: ScoreRecord) => {
+      const uidKey = String(item.uid || '').trim().toLowerCase();
+      const nameKey = item.displayName ? `name:${item.displayName.trim().toLowerCase()}` : '';
+      const fromScoreMap =
+        (uidKey && uidKey !== 'guest' && uidKey !== 'guest_default' ? latestFromScores.get(uidKey) : undefined) ||
+        (nameKey ? latestFromScores.get(nameKey) : undefined);
+
       if (isRowOwnedByCurrentUser(item) && user) {
+        const bestAvatar = isValidImg(user.avatar)
+          ? user.avatar!
+          : fromScoreMap?.avatar || (isValidImg(item.avatar) ? item.avatar! : '');
         return {
-          avatar: user.avatar || item.avatar || '',
-          avatarBg: user.avatarBg || item.avatarBg || 'from-cyan-500 to-blue-600'
+          avatar: bestAvatar,
+          avatarBg: user.avatarBg || fromScoreMap?.avatarBg || item.avatarBg || 'from-cyan-500 to-blue-600'
         };
       }
-      const matched = localUsers.find(
-        u =>
-          u.uid === item.uid ||
-          (item.displayName && u.displayName && u.displayName.trim() === item.displayName.trim())
-      );
+
+      const matched = localUsers.find(u => isRecordOwnedByUser(item, u));
+      const bestAvatar =
+        (matched && isValidImg(matched.avatar) ? matched.avatar! : '') ||
+        fromScoreMap?.avatar ||
+        (isValidImg(item.avatar) ? item.avatar! : '');
+
       return {
-        avatar: (matched?.avatar || item.avatar || ''),
-        avatarBg: matched?.avatarBg || item.avatarBg || 'from-cyan-500 to-blue-600'
+        avatar: bestAvatar,
+        avatarBg: matched?.avatarBg || fromScoreMap?.avatarBg || item.avatarBg || 'from-cyan-500 to-blue-600'
       };
     };
-  }, [user, scores]);
+  }, [user, scores, isRowOwnedByCurrentUser]);
 
   // Filter, keep ONLY each user's BEST score per mode, sort, then apply search
   const filteredScores = React.useMemo(() => {
@@ -148,17 +197,42 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
     avatarBg?: string,
     size: 'sm' | 'md' | 'lg' = 'md',
     name: string = '',
+    seed: string = '',
     className: string = ''
   ) => {
     return (
       <UserAvatar
         avatar={avatar}
         name={name}
+        seed={seed || name}
         gradient={avatarBg || 'from-cyan-500 to-blue-600'}
         size={size === 'lg' ? 'xl' : size}
         className={className}
       />
     );
+  };
+
+  const handleAvatarClick = (
+    row: ScoreRecord,
+    avatar: string,
+    avatarBg: string,
+    rankTierName: string,
+    isMine: boolean
+  ) => {
+    if (isMine && onOpenAvatarModal) {
+      onOpenAvatarModal();
+      return;
+    }
+    setPreviewPlayer({
+      displayName: row.displayName,
+      uid: row.uid,
+      avatar,
+      avatarBg,
+      rankTier: rankTierName,
+      score: row.score,
+      netWpm: row.netWpm,
+      accuracy: row.accuracy
+    });
   };
 
   const getModeLabel = (mode?: string, timeTaken?: number) => {
@@ -205,7 +279,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
               onClick={onOpenAvatarModal}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl font-semibold text-xs border transition-colors ${
                 isDark
-                  ? 'bg-slate-800/90 hover:bg-slate-750 text-slate-200 border-slate-700 hover:border-cyan-500/50'
+                  ? 'bg-slate-800/90 hover:bg-slate-700 text-slate-200 border-slate-700 hover:border-cyan-500/50'
                   : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-300 shadow-xs'
               }`}
               title="อัปโหลดหรือเปลี่ยนรูปโปรไฟล์เพื่อแสดงบนตารางอันดับ"
@@ -213,6 +287,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
               <UserAvatar
                 avatar={user.avatar}
                 name={user.displayName || user.fullName || ''}
+                seed={user.uid || user.studentId || user.displayName || ''}
                 gradient={user.avatarBg || 'from-cyan-500 to-blue-600'}
                 size="xs"
               />
@@ -236,7 +311,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
             disabled={isLoading}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-semibold text-xs border transition-colors w-fit ${
               isDark
-                ? 'bg-slate-800 hover:bg-slate-750 text-cyan-300 border-slate-700'
+                ? 'bg-slate-800 hover:bg-slate-700 text-cyan-300 border-slate-700'
                 : 'bg-slate-50 hover:bg-slate-100 text-cyan-700 border-slate-300 shadow-xs'
             }`}
           >
@@ -266,13 +341,11 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
                 <div>
                   <div className="relative inline-block mb-3">
                     <div
-                      onClick={isMine && onOpenAvatarModal ? onOpenAvatarModal : undefined}
-                      title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : top2.displayName}
-                      className={`p-0.5 rounded-3xl ring-2 ring-slate-300/70 shadow-lg ${
-                        isMine && onOpenAvatarModal ? 'cursor-pointer hover:scale-105 transition-transform' : ''
-                      }`}
+                      onClick={() => handleAvatarClick(top2, avatar, avatarBg, tier.tier, isMine)}
+                      title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : `ดูรูปโปรไฟล์ของ ${top2.displayName}`}
+                      className="p-0.5 rounded-3xl ring-2 ring-slate-300/70 shadow-lg cursor-pointer hover:scale-105 transition-transform"
                     >
-                      {renderAvatar(avatar, avatarBg, 'lg', top2.displayName)}
+                      {renderAvatar(avatar, avatarBg, 'lg', top2.displayName, top2.uid)}
                     </div>
                     <span className="absolute -bottom-2 -right-2 w-7 h-7 rounded-full bg-slate-300 text-slate-950 font-black text-xs flex items-center justify-center border-2 border-slate-900 shadow-md">
                       2
@@ -328,13 +401,11 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
                 <div>
                   <div className="relative inline-block mb-3">
                     <div
-                      onClick={isMine && onOpenAvatarModal ? onOpenAvatarModal : undefined}
-                      title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : top1.displayName}
-                      className={`p-1 rounded-3xl ring-4 ring-amber-400 shadow-xl shadow-amber-400/30 ${
-                        isMine && onOpenAvatarModal ? 'cursor-pointer hover:scale-105 transition-transform' : ''
-                      }`}
+                      onClick={() => handleAvatarClick(top1, avatar, avatarBg, tier.tier, isMine)}
+                      title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : `ดูรูปโปรไฟล์ของ ${top1.displayName}`}
+                      className="p-1 rounded-3xl ring-4 ring-amber-400 shadow-xl shadow-amber-400/30 cursor-pointer hover:scale-105 transition-transform"
                     >
-                      {renderAvatar(avatar, avatarBg, 'lg', top1.displayName)}
+                      {renderAvatar(avatar, avatarBg, 'lg', top1.displayName, top1.uid)}
                     </div>
                     <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-2xl animate-bounce">
                       👑
@@ -393,13 +464,11 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
                 <div>
                   <div className="relative inline-block mb-3">
                     <div
-                      onClick={isMine && onOpenAvatarModal ? onOpenAvatarModal : undefined}
-                      title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : top3.displayName}
-                      className={`p-0.5 rounded-3xl ring-2 ring-amber-700/70 shadow-lg ${
-                        isMine && onOpenAvatarModal ? 'cursor-pointer hover:scale-105 transition-transform' : ''
-                      }`}
+                      onClick={() => handleAvatarClick(top3, avatar, avatarBg, tier.tier, isMine)}
+                      title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : `ดูรูปโปรไฟล์ของ ${top3.displayName}`}
+                      className="p-0.5 rounded-3xl ring-2 ring-amber-700/70 shadow-lg cursor-pointer hover:scale-105 transition-transform"
                     >
-                      {renderAvatar(avatar, avatarBg, 'lg', top3.displayName)}
+                      {renderAvatar(avatar, avatarBg, 'lg', top3.displayName, top3.uid)}
                     </div>
                     <span className="absolute -bottom-2 -right-2 w-7 h-7 rounded-full bg-amber-700 text-white font-black text-xs flex items-center justify-center border-2 border-slate-900 shadow-md">
                       3
@@ -496,7 +565,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
               filterMode === 'all'
                 ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-md shadow-amber-500/20'
                 : isDark
-                ? 'bg-slate-800 hover:bg-slate-750 text-slate-300'
+                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
                 : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
             }`}
           >
@@ -508,7 +577,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
               filterMode === 'speed_sprint'
                 ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 shadow-md shadow-amber-500/20'
                 : isDark
-                ? 'bg-slate-800 hover:bg-slate-750 text-slate-300'
+                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
                 : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
             }`}
           >
@@ -520,7 +589,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
               filterMode === 'championship_endurance'
                 ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-md shadow-purple-500/20'
                 : isDark
-                ? 'bg-slate-800 hover:bg-slate-750 text-slate-300'
+                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
                 : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
             }`}
           >
@@ -532,7 +601,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
               filterMode === 'sudden_death'
                 ? 'bg-gradient-to-r from-rose-500 to-red-600 text-white shadow-md shadow-rose-500/20'
                 : isDark
-                ? 'bg-slate-800 hover:bg-slate-750 text-slate-300'
+                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
                 : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
             }`}
           >
@@ -625,19 +694,26 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
                       <td className="py-3 px-4 font-sans font-semibold">
                         <div className="flex items-center gap-3">
                           <div
-                            onClick={isMine && onOpenAvatarModal ? onOpenAvatarModal : undefined}
-                            title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : row.displayName}
-                            className={`relative group/av shrink-0 ${
+                            onClick={() => handleAvatarClick(row, avatar, avatarBg, tier.tier, isMine)}
+                            title={isMine ? 'คลิกเพื่อเปลี่ยนรูปโปรไฟล์' : `คลิกเพื่อดูรูปโปรไฟล์ของ ${row.displayName}`}
+                            className={`relative group/av shrink-0 cursor-pointer hover:scale-105 transition-transform rounded-2xl ${
                               isGM
-                                ? 'ring-2 ring-amber-400 rounded-2xl'
+                                ? 'ring-2 ring-amber-400'
                                 : isMaster
-                                ? 'ring-2 ring-purple-400 rounded-2xl'
+                                ? 'ring-2 ring-purple-400'
                                 : isMine
-                                ? 'ring-2 ring-cyan-400 rounded-2xl'
-                                : ''
-                            } ${isMine && onOpenAvatarModal ? 'cursor-pointer hover:scale-105 transition-transform' : ''}`}
+                                ? 'ring-2 ring-cyan-400'
+                                : isDark
+                                ? 'ring-1 ring-slate-700'
+                                : 'ring-1 ring-slate-200'
+                            }`}
                           >
-                            {renderAvatar(avatar, avatarBg, 'md', row.displayName)}
+                            {renderAvatar(avatar, avatarBg, 'md', row.displayName, row.uid)}
+                            {isMine && onOpenAvatarModal && (
+                              <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-cyan-500 text-slate-950 flex items-center justify-center shadow-sm">
+                                <Camera className="w-2.5 h-2.5" />
+                              </span>
+                            )}
                           </div>
                           <div>
                             <div className={`flex items-center gap-1.5 ${isDark ? 'text-slate-200' : 'text-slate-900'}`}>
@@ -739,6 +815,70 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Player Avatar Zoom Preview Modal */}
+      {previewPlayer && (
+        <div
+          onClick={() => setPreviewPlayer(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in"
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className={`w-full max-w-xs border rounded-3xl p-6 text-center shadow-2xl relative ${
+              isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => setPreviewPlayer(null)}
+              className={`absolute top-4 right-4 p-1.5 rounded-xl transition-colors ${
+                isDark
+                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex justify-center mb-4 mt-1">
+              <div className="p-1 rounded-3xl ring-4 ring-cyan-400/40 shadow-xl">
+                <UserAvatar
+                  avatar={previewPlayer.avatar}
+                  name={previewPlayer.displayName}
+                  seed={previewPlayer.uid || previewPlayer.displayName}
+                  gradient={previewPlayer.avatarBg}
+                  size="xl"
+                  className="w-32 h-32 rounded-3xl"
+                />
+              </div>
+            </div>
+
+            <h3 className={`text-lg font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>
+              {previewPlayer.displayName}
+            </h3>
+            <p className="text-xs font-bold text-amber-500 mt-0.5">{previewPlayer.rankTier}</p>
+
+            <div
+              className={`mt-4 pt-3 border-t grid grid-cols-3 gap-2 text-xs font-mono ${
+                isDark ? 'border-slate-800 text-slate-300' : 'border-slate-200 text-slate-700'
+              }`}
+            >
+              <div>
+                <div className="text-[10px] text-slate-500 font-sans">คะแนน</div>
+                <div className="font-black text-amber-500">{previewPlayer.score}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 font-sans">ความเร็ว</div>
+                <div className="font-bold text-cyan-500">{previewPlayer.netWpm} WPM</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 font-sans">แม่นยำ</div>
+                <div className="font-bold text-emerald-500">{previewPlayer.accuracy}%</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -21,7 +21,7 @@ import {
 import { TypingArea } from './TypingArea';
 import { VirtualKeyboard } from './VirtualKeyboard';
 import { QuizExamView } from './QuizExamView';
-import { apiSaveScore } from '../utils/googleSheets';
+import { apiSaveScore, getUserPrePostComparison, subscribeUserDataUpdates } from '../utils/googleSheets';
 import { getPosttestUnlockStatus } from './MedalShowcase';
 import { useTheme } from '../context/ThemeContext';
 
@@ -62,6 +62,13 @@ export const TestMode: React.FC<TestModeProps> = ({
     }
   }, [specificType, user]);
 
+  // Realtime sync of Post-test unlock status when medals/scores update
+  React.useEffect(() => {
+    return subscribeUserDataUpdates(() => {
+      setUnlockStatus(getPosttestUnlockStatus(user));
+    });
+  }, [user]);
+
   const isPosttestLocked = activeTest === 'posttest' && !unlockStatus.isUnlocked;
 
   const testText = activeTest === 'pretest'
@@ -83,6 +90,7 @@ export const TestMode: React.FC<TestModeProps> = ({
       scoreId: 'test_' + Date.now().toString(36),
       uid: user ? user.uid : 'guest',
       displayName: user ? user.displayName : 'ผู้ทดสอบ (Student)',
+      classroom: user?.classroom || 'ทั่วไป',
       avatar: user?.avatar || '',
       avatarBg: user?.avatarBg || 'from-cyan-500 to-blue-600',
       gameMode: activeTest,
@@ -473,7 +481,7 @@ export const TestMode: React.FC<TestModeProps> = ({
                 บันทึกผลการทดสอบสำเร็จ!
               </h3>
               <p className={`text-sm mt-1 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                {latestResult.levelTitle} • บันทึกลง Google Sheets เรียบร้อย
+                {latestResult.levelTitle} • บันทึกลง Google Sheets, หน้าโปรไฟล์ และแดชบอร์ดครูผู้สอนเรียบร้อยแล้ว
               </p>
               <div
                 className={`mt-3 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-bold border ${
@@ -522,7 +530,65 @@ export const TestMode: React.FC<TestModeProps> = ({
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              {/* Pre-Test vs Post-Test Practical Typing Comparison */}
+              {activeTest === 'posttest' && (() => {
+                const comp = user ? getUserPrePostComparison(user) : null;
+                if (!comp || comp.pretestTypingWpm === null) return null;
+                const wpmDiff = latestResult.netWpm - comp.pretestTypingWpm;
+                const accDiff =
+                  comp.pretestTypingAccuracy !== null
+                    ? latestResult.accuracy - comp.pretestTypingAccuracy
+                    : null;
+                return (
+                  <div
+                    className={`p-4 rounded-2xl border mb-6 text-left ${
+                      isDark ? 'bg-slate-950/70 border-slate-800' : 'bg-cyan-50/70 border-cyan-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs font-bold text-cyan-500 mb-3">
+                      <TrendingUp className="w-4 h-4" />
+                      <span>เปรียบเทียบผลพิมพ์ปฏิบัติ (Pre-Test VS Post-Test)</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3 text-center font-mono tabular-nums">
+                      <div>
+                        <div className={`text-[11px] font-sans ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                          ก่อนเรียน (Pre)
+                        </div>
+                        <div className={`text-lg font-bold mt-0.5 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                          {comp.pretestTypingWpm} WPM
+                        </div>
+                        {comp.pretestTypingAccuracy !== null && (
+                          <div className="text-[11px] text-slate-400">{comp.pretestTypingAccuracy}%</div>
+                        )}
+                      </div>
+                      <div>
+                        <div className={`text-[11px] font-sans ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                          หลังเรียน (Post)
+                        </div>
+                        <div className="text-lg font-bold text-cyan-500 mt-0.5">
+                          {latestResult.netWpm} WPM
+                        </div>
+                        <div className="text-[11px] text-emerald-500">{latestResult.accuracy}%</div>
+                      </div>
+                      <div>
+                        <div className={`text-[11px] font-sans font-semibold ${wpmDiff >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                          พัฒนาการ
+                        </div>
+                        <div className={`text-lg font-black mt-0.5 ${wpmDiff >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                          {wpmDiff > 0 ? `+${wpmDiff}` : wpmDiff} WPM
+                        </div>
+                        {accDiff !== null && (
+                          <div className={`text-[11px] font-bold ${accDiff >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                            {accDiff > 0 ? `+${accDiff}%` : `${accDiff}%`}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="flex flex-col sm:flex-row flex-wrap gap-3 justify-center">
                 <button
                   type="button"
                   onClick={() => {
@@ -539,6 +605,21 @@ export const TestMode: React.FC<TestModeProps> = ({
                 >
                   ทดสอบใหม่อีกครั้ง
                 </button>
+
+                {onNavigateTab && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateTab('profile')}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-xs border transition-all flex items-center justify-center gap-1.5 ${
+                      isDark
+                        ? 'bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border-emerald-500/40'
+                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300'
+                    }`}
+                  >
+                    <TrendingUp className="w-3.5 h-3.5" />
+                    <span>ดูสรุปเทียบคะแนนในโปรไฟล์</span>
+                  </button>
+                )}
 
                 {activeTest === 'pretest' && onNavigateTab ? (
                   <button

@@ -7,12 +7,14 @@ import {
   ClipboardCheck,
   GraduationCap,
   Gamepad2,
-  Crown
+  Crown,
+  Award,
+  ArrowRight
 } from 'lucide-react';
-import { ScoreRecord, User } from '../types';
+import { ScoreRecord, User, UserMedalProfile } from '../types';
 import { LEVELS_CONFIG } from '../data/levels';
 import { useTheme } from '../context/ThemeContext';
-import { getLocalScores } from '../utils/googleSheets';
+import { getLocalScores, getUserMedalProfile, isRecordOwnedByUser } from '../utils/googleSheets';
 
 export const GRAND_MEDAL_IMAGE_PATH = '/assets/aistudio/_________________________________fc88b102.png';
 
@@ -32,7 +34,10 @@ export interface CurriculumCompletionInfo {
   isGrandComplete: boolean;
 }
 
-export function getCurriculumCompletion(userScores: ScoreRecord[]): CurriculumCompletionInfo {
+export function getCurriculumCompletion(
+  userScores: ScoreRecord[],
+  savedMedalProfile?: UserMedalProfile | null
+): CurriculumCompletionInfo {
   const pretestRecords = userScores.filter(
     s => s.gameMode === 'pretest' || s.testType === 'PRE_TEST'
   );
@@ -46,11 +51,18 @@ export function getCurriculumCompletion(userScores: ScoreRecord[]): CurriculumCo
     s => s.gameMode === 'game' && s.passed
   );
 
-  const hasPretest = pretestRecords.length > 0;
-  const hasLesson = lessonRecords.length > 0;
-  const hasPosttest = posttestRecords.length > 0;
+  const hasPretest = pretestRecords.length > 0 || Boolean(savedMedalProfile?.hasPretest);
+  const hasLesson = lessonRecords.length > 0 || Boolean(savedMedalProfile?.hasLesson);
+  const hasPosttest = posttestRecords.length > 0 || Boolean(savedMedalProfile?.hasPosttest);
 
   const passedLevelMap = new Map<number, { bestWpm: number; bestScore: number; bestAccuracy: number }>();
+  if (savedMedalProfile?.passedLevels) {
+    for (const lvl of savedMedalProfile.passedLevels) {
+      if (Number.isFinite(lvl) && lvl >= 1 && lvl <= 10) {
+        passedLevelMap.set(lvl, { bestWpm: 0, bestScore: 0, bestAccuracy: 0 });
+      }
+    }
+  }
   for (const r of gamePassedRecords) {
     const lvl = Number(r.levelId);
     if (!Number.isFinite(lvl) || lvl < 1 || lvl > 10) continue;
@@ -71,7 +83,7 @@ export function getCurriculumCompletion(userScores: ScoreRecord[]): CurriculumCo
   }
 
   const passedLevelsCount = passedLevelMap.size;
-  const hasAll10Levels = passedLevelsCount === 10;
+  const hasAll10Levels = passedLevelsCount === 10 || Boolean(savedMedalProfile?.hasAll10Levels);
 
   const totalSteps = 13; // Pretest (1) + Learning Center (1) + 10 Game Levels (10) + Posttest (1)
   const completedSteps =
@@ -81,7 +93,9 @@ export function getCurriculumCompletion(userScores: ScoreRecord[]): CurriculumCo
     (hasPosttest ? 1 : 0);
 
   const completionPercent = Math.round((completedSteps / totalSteps) * 100);
-  const isGrandComplete = hasPretest && hasLesson && hasAll10Levels && hasPosttest;
+  const isGrandComplete =
+    (hasPretest && hasLesson && hasAll10Levels && hasPosttest) ||
+    Boolean(savedMedalProfile?.isGrandComplete);
 
   return {
     pretestRecords,
@@ -123,14 +137,10 @@ export function getPosttestUnlockStatus(user: User | null): PosttestUnlockStatus
   }
 
   const allScores = getLocalScores();
-  const userScores = allScores.filter(
-    s =>
-      s.uid === user.uid ||
-      (user.studentId && s.uid === user.studentId) ||
-      (user.displayName && s.displayName === user.displayName)
-  );
+  const userScores = allScores.filter(s => isRecordOwnedByUser(s, user));
+  const savedProfile = getUserMedalProfile(user);
 
-  const info = getCurriculumCompletion(userScores);
+  const info = getCurriculumCompletion(userScores, savedProfile);
   const missingLevels: number[] = [];
   for (let i = 1; i <= 10; i++) {
     if (!info.passedLevelMap.has(i)) {
@@ -157,9 +167,17 @@ export function getPosttestUnlockStatus(user: User | null): PosttestUnlockStatus
 
 interface MedalShowcaseProps {
   userScores: ScoreRecord[];
+  savedMedalProfile?: UserMedalProfile | null;
+  onOpenGrandCelebration?: () => void;
+  onNavigateTab?: (tab: string) => void;
 }
 
-export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
+export const MedalShowcase: React.FC<MedalShowcaseProps> = ({
+  userScores,
+  savedMedalProfile,
+  onOpenGrandCelebration,
+  onNavigateTab
+}) => {
   const { isDark } = useTheme();
 
   const {
@@ -176,7 +194,7 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
     totalSteps,
     completionPercent,
     isGrandComplete
-  } = getCurriculumCompletion(userScores);
+  } = getCurriculumCompletion(userScores, savedMedalProfile);
 
   const bestPretestScore = pretestRecords.reduce((m, r) => Math.max(m, r.score), 0);
   const bestPosttestScore = posttestRecords.reduce((m, r) => Math.max(m, r.score), 0);
@@ -265,18 +283,31 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
         <div className="relative z-10 flex flex-col lg:flex-row items-center gap-6 sm:gap-8">
           {/* Custom Medal Image Display */}
           <div className="relative shrink-0 flex flex-col items-center">
-            <div
-              className={`relative w-36 h-36 sm:w-44 sm:h-44 rounded-full p-1.5 transition-all duration-500 ${
+            <button
+              type="button"
+              onClick={() => {
+                if (isGrandComplete && onOpenGrandCelebration) {
+                  onOpenGrandCelebration();
+                }
+              }}
+              disabled={!isGrandComplete || !onOpenGrandCelebration}
+              title={
                 isGrandComplete
-                  ? 'bg-gradient-to-tr from-emerald-400 via-green-300 to-teal-500 shadow-2xl shadow-emerald-500/40 ring-4 ring-emerald-400/30'
+                  ? 'คลิกเพื่อเปิดดูป็อปอัพแสดงความยินดี 100%'
+                  : `ความคืบหน้า ${completionPercent}% (ทำครบทุกภารกิจเพื่อปลดล็อก)`
+              }
+              className={`relative w-36 h-36 sm:w-44 sm:h-44 rounded-full p-1.5 transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                isGrandComplete
+                  ? 'bg-gradient-to-tr from-emerald-400 via-green-300 to-teal-500 shadow-2xl shadow-emerald-500/40 ring-4 ring-emerald-400/30 cursor-pointer hover:scale-[1.03]'
                   : isDark
-                  ? 'bg-slate-800 ring-2 ring-slate-700'
-                  : 'bg-slate-200 ring-2 ring-slate-300'
+                  ? 'bg-slate-800 ring-2 ring-slate-700 cursor-default'
+                  : 'bg-slate-200 ring-2 ring-slate-300 cursor-default'
               }`}
             >
               <img
                 src={GRAND_MEDAL_IMAGE_PATH}
                 alt="เหรียญตราเกียรติยศพิชิตหลักสูตรครบ 100%"
+                referrerPolicy="no-referrer"
                 className={`w-full h-full object-cover rounded-full transition-all duration-500 ${
                   isGrandComplete
                     ? 'brightness-105 contrast-105'
@@ -289,48 +320,66 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
                   <div className="w-11 h-11 rounded-2xl bg-slate-900/90 border border-slate-700 flex items-center justify-center mb-1.5 shadow-lg">
                     <Lock className="w-5 h-5 text-amber-400" />
                   </div>
-                  <span className="font-mono text-sm font-black text-emerald-300">
+                  <span className="font-mono tabular-nums text-sm font-black text-emerald-300">
                     {completionPercent}%
                   </span>
                 </div>
               )}
 
               {isGrandComplete && (
-                <span className="absolute -bottom-1 -right-1 w-10 h-10 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-lg ring-4 ring-white dark:ring-slate-900">
+                <span
+                  className={`absolute -bottom-1 -right-1 w-10 h-10 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-lg ring-4 ${
+                    isDark ? 'ring-slate-900' : 'ring-white'
+                  }`}
+                >
                   <Crown className="w-5 h-5" />
                 </span>
               )}
-            </div>
+            </button>
           </div>
 
           {/* Info & 100% Checklist */}
           <div className="flex-1 w-full text-center lg:text-left">
-            <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2 mb-2">
-              <span
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black border ${
-                  isGrandComplete
-                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-400/50'
-                    : isDark
-                    ? 'bg-slate-800 text-slate-300 border-slate-700'
-                    : 'bg-slate-100 text-slate-700 border-slate-300'
-                }`}
-              >
-                {isGrandComplete ? (
-                  <>
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>ปลดล็อกเหรียญตราสูงสุดแล้ว! (100% Complete)</span>
-                  </>
-                ) : (
-                  <>
-                    <Lock className="w-3.5 h-3.5 text-amber-500" />
-                    <span>เหรียญตราระดับสูงสุด (ต้องผ่านครบ 100%)</span>
-                  </>
-                )}
-              </span>
+            <div className="flex flex-wrap items-center justify-center lg:justify-between gap-3 mb-2">
+              <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2">
+                <span
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black border ${
+                    isGrandComplete
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-400/50'
+                      : isDark
+                      ? 'bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-slate-100 text-slate-700 border-slate-300'
+                  }`}
+                >
+                  {isGrandComplete ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>ปลดล็อกเหรียญตราสูงสุดแล้ว! (100% Complete)</span>
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-3.5 h-3.5 text-amber-500" />
+                      <span>เหรียญตราระดับสูงสุด (ต้องผ่านครบ 100%)</span>
+                    </>
+                  )}
+                </span>
 
-              <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">
-                {completedSteps} / {totalSteps} ภารกิจ ({completionPercent}%)
-              </span>
+                <span className="text-xs font-mono tabular-nums font-bold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">
+                  {completedSteps} / {totalSteps} ภารกิจ ({completionPercent}%)
+                </span>
+              </div>
+
+              {isGrandComplete && onOpenGrandCelebration && (
+                <button
+                  type="button"
+                  onClick={onOpenGrandCelebration}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-500/25 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                >
+                  <Award className="w-4 h-4" />
+                  <span>ดูคำแสดงความยินดี 100%</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             <h3 className={`text-xl sm:text-2xl font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>
@@ -338,8 +387,8 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
             </h3>
             <p className={`text-xs sm:text-sm mt-1 ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
               {isGrandComplete
-                ? 'ขอแสดงความยินดี! คุณผ่านครบทุกด่านและทุกบททดสอบ 100% เต็มรูปแบบแล้ว เหรียญตรานี้แสดงอยู่บนโปรไฟล์ของคุณอย่างถาวร'
-                : 'เงื่อนไขการรับเหรียญตรา: ต้องทำ Pre-Test, ศูนย์การเรียนรู้, ผ่านโหมดเกมครบทั้ง 10 ด่าน และทำ Post-Test ให้เสร็จสมบูรณ์ครบ 100%'}
+                ? 'ขอแสดงความยินดี! คุณผ่านครบทุกด่านและทุกบททดสอบ 100% เต็มรูปแบบแล้ว สามารถคลิกที่เหรียญหรือปุ่มด้านบนเพื่อดูป็อปอัพแสดงความยินดีได้ตลอดเวลา'
+                : 'เงื่อนไขการรับเหรียญตรา: ต้องทำ Pre-Test, ศูนย์การเรียนรู้, ผ่านโหมดเกมครบทั้ง 10 ด่าน และทำ Post-Test ให้เสร็จสมบูรณ์ครบ 100% (เมื่อครบจะแสดงป็อปอัพยินดีและกดดูได้ที่การ์ดนี้)'}
             </p>
 
             {/* Progress Bar */}
@@ -358,8 +407,13 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
 
             {/* 4-Step Condition Checklist */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
-              <div
-                className={`p-2.5 rounded-xl border flex items-center gap-2 ${
+              <button
+                type="button"
+                onClick={() => onNavigateTab?.('pretest')}
+                disabled={!onNavigateTab}
+                className={`p-2.5 rounded-xl border flex items-center gap-2 transition-colors ${
+                  onNavigateTab ? 'cursor-pointer hover:border-emerald-400/70' : 'cursor-default'
+                } ${
                   hasPretest
                     ? isDark
                       ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
@@ -378,10 +432,15 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
                   <div className="font-bold">Pre-Test</div>
                   <div className="text-[10px] opacity-80">{hasPretest ? 'ผ่านแล้ว' : 'ยังไม่ทำ'}</div>
                 </div>
-              </div>
+              </button>
 
-              <div
-                className={`p-2.5 rounded-xl border flex items-center gap-2 ${
+              <button
+                type="button"
+                onClick={() => onNavigateTab?.('lessons')}
+                disabled={!onNavigateTab}
+                className={`p-2.5 rounded-xl border flex items-center gap-2 transition-colors ${
+                  onNavigateTab ? 'cursor-pointer hover:border-emerald-400/70' : 'cursor-default'
+                } ${
                   hasLesson
                     ? isDark
                       ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
@@ -400,10 +459,15 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
                   <div className="font-bold">ศูนย์การเรียนรู้</div>
                   <div className="text-[10px] opacity-80">{hasLesson ? 'สำเร็จแล้ว' : 'ยังไม่ทำ'}</div>
                 </div>
-              </div>
+              </button>
 
-              <div
-                className={`p-2.5 rounded-xl border flex items-center gap-2 ${
+              <button
+                type="button"
+                onClick={() => onNavigateTab?.('game')}
+                disabled={!onNavigateTab}
+                className={`p-2.5 rounded-xl border flex items-center gap-2 transition-colors ${
+                  onNavigateTab ? 'cursor-pointer hover:border-emerald-400/70' : 'cursor-default'
+                } ${
                   hasAll10Levels
                     ? isDark
                       ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
@@ -420,12 +484,17 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
                 )}
                 <div className="text-left leading-tight">
                   <div className="font-bold">เกม 10 ด่าน</div>
-                  <div className="text-[10px] opacity-80 font-mono">{passedLevelsCount}/10 ด่าน</div>
+                  <div className="text-[10px] opacity-80 font-mono tabular-nums">{passedLevelsCount}/10 ด่าน</div>
                 </div>
-              </div>
+              </button>
 
-              <div
-                className={`p-2.5 rounded-xl border flex items-center gap-2 ${
+              <button
+                type="button"
+                onClick={() => onNavigateTab?.('posttest')}
+                disabled={!onNavigateTab}
+                className={`p-2.5 rounded-xl border flex items-center gap-2 transition-colors ${
+                  onNavigateTab ? 'cursor-pointer hover:border-emerald-400/70' : 'cursor-default'
+                } ${
                   hasPosttest
                     ? isDark
                       ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
@@ -444,7 +513,7 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
                   <div className="font-bold">Post-Test</div>
                   <div className="text-[10px] opacity-80">{hasPosttest ? 'ผ่านแล้ว' : 'ยังไม่ทำ'}</div>
                 </div>
-              </div>
+              </button>
             </div>
           </div>
         </div>
@@ -826,7 +895,9 @@ export const MedalShowcase: React.FC<MedalShowcaseProps> = ({ userScores }) => {
                 <div className="mt-2">
                   {unlocked && stats ? (
                     <span className={`text-[10px] font-mono font-bold ${style.badgeLabel}`}>
-                      {stats.bestWpm} WPM • {stats.bestAccuracy}%
+                      {stats.bestWpm > 0 || stats.bestAccuracy > 0
+                        ? `${stats.bestWpm} WPM • ${stats.bestAccuracy}%`
+                        : '✓ ผ่านด่านแล้ว'}
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-500">

@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, LogIn, UserPlus, AlertCircle, IdCard, KeyRound, Upload, Trash2 } from 'lucide-react';
 import { User } from '../types';
-import { apiLoginUser, apiRegisterStudent } from '../utils/googleSheets';
+import { apiLoginUser, apiRegisterStudent, CLASSROOM_OPTIONS } from '../utils/googleSheets';
 import { processAvatarFile } from '../utils/imageUpload';
 import { useTheme } from '../context/ThemeContext';
 import { UserAvatar } from './UserAvatar';
@@ -331,12 +331,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         : 'bg-slate-50 border-slate-300 text-slate-900'
                     }`}
                   >
-                    <option value="ปวช.3/1">ปวช.3/1</option>
-                    <option value="ปวช.3/2">ปวช.3/2</option>
-                    <option value="ปวช.3/3">ปวช.3/3</option>
-                    <option value="ปวช.1">ปวช.1</option>
-                    <option value="ปวช.2">ปวช.2</option>
-                    <option value="ทั่วไป">ทั่วไป</option>
+                    {CLASSROOM_OPTIONS.map(room => (
+                      <option key={room} value={room}>
+                        {room}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -427,7 +426,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             className="w-full py-3 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm shadow-lg shadow-cyan-500/20 transition-all flex items-center justify-center gap-2 mt-4"
           >
             {isLoading ? (
-              <span>กำลังดำเนินการ...</span>
+              <span className="animate-pulse">
+                {mode === 'login'
+                  ? 'กำลังตรวจสอบบัญชีจาก Google Sheets...'
+                  : 'กำลังบันทึกบัญชีลง Google Sheets...'}
+              </span>
             ) : mode === 'login' ? (
               <>
                 <LogIn className="w-4 h-4" />
