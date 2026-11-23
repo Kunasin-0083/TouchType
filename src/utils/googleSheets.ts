@@ -337,12 +337,17 @@ function doPost(e) {
             testType: r[6],
             language: r[7],
             levelId: r[8],
+            levelTitle: r[5] === 'game' ? 'ด่านที่ ' + r[8] : String(r[8] || r[5]),
             score: Number(r[9]) || 0,
+            totalCharacters: Number(r[10]) || 0,
+            correctCharacters: Number(r[11]) || 0,
+            incorrectCharacters: Number(r[12]) || 0,
             accuracy: Number(r[13]) || 0,
+            grossWpm: Number(r[14]) || 0,
             netWpm: Number(r[15]) || 0,
             timeTakenSeconds: Number(r[16]) || 0,
             passed: Boolean(r[17]),
-            rankTier: r[18] || 'Master',
+            rankTier: r[18] || '',
             createdAt: r[19] || new Date().toISOString()
           });
         }
@@ -376,7 +381,7 @@ function doPost(e) {
       scores.sort(function(a, b) {
         return (b.score - a.score) || (b.accuracy - a.accuracy) || (b.netWpm - a.netWpm);
       });
-      return createJsonResponse({ success: true, scores: scores.slice(0, 200) });
+      return createJsonResponse({ success: true, scores: scores.slice(0, 2000) });
     }
 
     if (action === 'register') {
@@ -3663,21 +3668,27 @@ function enrichScoresWithUserAvatars(scores: ScoreRecord[]): ScoreRecord[] {
 }
 
 export async function apiFetchLeaderboard(): Promise<ScoreRecord[]> {
+  const deletedKeys = getDeletedUserKeysSet();
+  const isRealValidScore = (s: ScoreRecord) =>
+    Boolean(s) &&
+    !String(s.uid || '').startsWith('seed_') &&
+    !isAvatarSyncRecord(s) &&
+    !(deletedKeys.size > 0 && isTargetDeleted(deletedKeys, { uid: s.uid }));
+
   try {
     const res = await sendToAppsScript({
       action: 'getLeaderboard',
       sheetId: SHEET_ID
     });
 
-    if (res.success && res.data && Array.isArray(res.data.scores) && res.data.scores.length > 0) {
-      const local = getLocalScores();
-      const combined = [...res.data.scores];
-      local.forEach(l => {
+    if (res.success && res.data && Array.isArray(res.data.scores)) {
+      const localReal = getLocalScores().filter(isRealValidScore);
+      const combined: ScoreRecord[] = res.data.scores.filter(isRealValidScore);
+      localReal.forEach(l => {
         if (!combined.some(c => c.scoreId === l.scoreId)) {
           combined.push(l);
         }
       });
-      // Enrich remote & local entries with latest user, vault & score avatars before sorting
       const enriched = enrichScoresWithUserAvatars(combined);
       enriched.sort((a, b) => b.score - a.score || b.accuracy - a.accuracy || b.netWpm - a.netWpm);
       return enriched;
@@ -3686,7 +3697,7 @@ export async function apiFetchLeaderboard(): Promise<ScoreRecord[]> {
     // fallback
   }
 
-  return enrichScoresWithUserAvatars(getLocalScores()).sort(
+  return enrichScoresWithUserAvatars(getLocalScores().filter(isRealValidScore)).sort(
     (a, b) => b.score - a.score || b.accuracy - a.accuracy || b.netWpm - a.netWpm
   );
 }
@@ -4582,5 +4593,288 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     prePostComparisons: Object.values(mergedPrePostMap),
     syncedFromSheet,
     syncedAt: new Date().toISOString()
+  };
+}
+
+export interface PublicPlayerProfile {
+  playerKey: string;
+  uid: string;
+  studentId: string;
+  displayName: string;
+  fullName: string;
+  classroom: string;
+  avatar: string;
+  avatarBg: string;
+  allScores: ScoreRecord[];
+  medalProfile: UserMedalProfile | null;
+  prePostComparison: PrePostComparisonRecord | null;
+  totalPlayed: number;
+  bestOverallScore: number;
+  bestOverallCategory: string;
+  bestRankedScore: number;
+  bestRankedRecord: ScoreRecord | null;
+  bestGameScore: number;
+  totalGameLevelsScore: number;
+  passedLevelsCount: number;
+  bestWpm: number;
+  bestWpmRecord: ScoreRecord | null;
+  avgWpm: number;
+  bestAccuracy: number;
+  avgAccuracy: number;
+  bestLessonRecord: ScoreRecord | null;
+  totalMedalsCount: number;
+  completionPercent: number;
+  isGrandComplete: boolean;
+  lastActiveAt: string | null;
+}
+
+export interface GlobalLeaderboardSnapshot {
+  scores: ScoreRecord[];
+  players: PublicPlayerProfile[];
+  syncedFromSheet: boolean;
+  syncedAt: string;
+}
+
+export async function apiFetchGlobalLeaderboardData(): Promise<GlobalLeaderboardSnapshot> {
+  const snapshot = await apiFetchTeacherDashboardData();
+
+  // Build maps for fast lookup by accountKey / uid / displayName
+  const medalByKey = new Map<string, UserMedalProfile>();
+  snapshot.medalProfiles.forEach(m => {
+    const keys = [
+      String(m.accountKey || '').trim().toLowerCase(),
+      String(m.studentId || '').trim().toLowerCase(),
+      String(m.uid || '').trim().toLowerCase(),
+      m.displayName ? `name:${m.displayName.trim().toLowerCase()}` : ''
+    ];
+    keys.forEach(k => {
+      if (k && !medalByKey.has(k)) medalByKey.set(k, m);
+    });
+  });
+
+  const prePostByKey = new Map<string, PrePostComparisonRecord>();
+  snapshot.prePostComparisons.forEach(pp => {
+    const keys = [
+      String(pp.accountKey || '').trim().toLowerCase(),
+      String(pp.studentId || '').trim().toLowerCase(),
+      String(pp.uid || '').trim().toLowerCase(),
+      pp.displayName ? `name:${pp.displayName.trim().toLowerCase()}` : ''
+    ];
+    keys.forEach(k => {
+      if (k && !prePostByKey.has(k)) prePostByKey.set(k, pp);
+    });
+  });
+
+  // Collect all unique non-teacher, non-seed players from Users + Scores + Medals
+  const playerUsersMap = new Map<string, User>();
+  const registerPlayerUser = (u: User) => {
+    if (!u) return;
+    if (u.role === 'teacher' || u.role === 'admin') return;
+    const rawUid = String(u.uid || '').trim();
+    if (rawUid.startsWith('seed_') || rawUid.startsWith('teacher_')) return;
+    const key = String(u.studentId || u.username || u.uid || u.displayName || '')
+      .trim()
+      .toLowerCase();
+    if (!key || key === 'guest' || key === 'guest_default') return;
+    if (!playerUsersMap.has(key)) {
+      playerUsersMap.set(key, u);
+    }
+  };
+
+  snapshot.users.forEach(registerPlayerUser);
+
+  // Also ensure any guest/score-only player present in Google Sheet Scores has a profile entry
+  snapshot.scores.forEach(s => {
+    if (!s || String(s.uid || '').startsWith('seed_')) return;
+    const matched = Array.from(playerUsersMap.values()).some(u => isRecordOwnedByUser(s, u));
+    if (matched) return;
+    const cleanUid = String(s.uid || '').trim();
+    const isGuest = !cleanUid || cleanUid === 'guest' || cleanUid === 'guest_default';
+    const key = isGuest
+      ? `name:${String(s.displayName || 'ผู้เล่น').trim().toLowerCase()}`
+      : cleanUid.replace(/^std_/, '').split('_')[0].toLowerCase();
+    if (!key || playerUsersMap.has(key)) return;
+    playerUsersMap.set(key, {
+      uid: cleanUid || key,
+      username: key,
+      studentId: isGuest ? '' : cleanUid.replace(/^std_/, '').split('_')[0],
+      fullName: s.displayName || 'ผู้เล่น',
+      displayName: s.displayName || 'ผู้เล่น',
+      classroom: s.classroom || 'ทั่วไป',
+      role: 'student',
+      avatar: isValidAvatarData(s.avatar) ? s.avatar! : '',
+      avatarBg: s.avatarBg || 'from-cyan-500 to-blue-600',
+      createdAt: s.createdAt || new Date().toISOString()
+    });
+  });
+
+  const players: PublicPlayerProfile[] = Array.from(playerUsersMap.entries()).map(([playerKey, u]) => {
+    const ownedScores = snapshot.scores
+      .filter(s => {
+        if (playerKey.startsWith('name:')) {
+          const targetName = playerKey.slice(5);
+          return String(s.displayName || '').trim().toLowerCase() === targetName;
+        }
+        return isRecordOwnedByUser(s, u);
+      })
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+    const lookupKeys = [
+      playerKey,
+      String(u.studentId || '').trim().toLowerCase(),
+      String(u.uid || '').trim().toLowerCase(),
+      u.displayName ? `name:${u.displayName.trim().toLowerCase()}` : ''
+    ];
+
+    let savedMedal: UserMedalProfile | null = null;
+    for (const k of lookupKeys) {
+      if (k && medalByKey.has(k)) {
+        savedMedal = medalByKey.get(k)!;
+        break;
+      }
+    }
+    const medalProfile = computeUserMedalProfile(u, ownedScores, savedMedal);
+
+    let savedPrePost: PrePostComparisonRecord | null = null;
+    for (const k of lookupKeys) {
+      if (k && prePostByKey.has(k)) {
+        savedPrePost = prePostByKey.get(k)!;
+        break;
+      }
+    }
+    const prePostComparison = computePrePostComparison(u, ownedScores, savedPrePost);
+
+    const rankedScores = ownedScores.filter(s => s.gameMode === 'ranked' || s.testType === 'RANKED');
+    const bestRankedRecord =
+      rankedScores.length > 0
+        ? [...rankedScores].sort(
+            (a, b) => b.score - a.score || b.accuracy - a.accuracy || b.netWpm - a.netWpm
+          )[0]
+        : null;
+
+    const gameScores = ownedScores.filter(s => s.gameMode === 'game');
+    const bestGameByLevel = new Map<number, ScoreRecord>();
+    gameScores.forEach(gs => {
+      const lvl = Number(gs.levelId);
+      if (!Number.isFinite(lvl) || lvl < 1 || lvl > 10) return;
+      const ex = bestGameByLevel.get(lvl);
+      if (!ex || gs.score > ex.score || (gs.score === ex.score && gs.accuracy > ex.accuracy)) {
+        bestGameByLevel.set(lvl, gs);
+      }
+    });
+    const bestGameScore =
+      gameScores.length > 0 ? Math.max(...gameScores.map(g => Number(g.score) || 0)) : 0;
+    const totalGameLevelsScore = Array.from(bestGameByLevel.values()).reduce(
+      (sum, g) => sum + (Number(g.score) || 0),
+      0
+    );
+
+    const lessonScores = ownedScores.filter(s => s.gameMode === 'lesson' || s.gameMode === 'practice');
+    const bestLessonRecord =
+      lessonScores.length > 0
+        ? [...lessonScores].sort(
+            (a, b) => b.netWpm - a.netWpm || b.accuracy - a.accuracy || b.score - a.score
+          )[0]
+        : null;
+
+    const typingOnly = ownedScores.filter(s => !isQuizScoreRecord(s) && (Number(s.netWpm) || 0) > 0);
+    const bestWpmRecord =
+      typingOnly.length > 0
+        ? [...typingOnly].sort(
+            (a, b) => b.netWpm - a.netWpm || b.accuracy - a.accuracy || b.score - a.score
+          )[0]
+        : null;
+    const bestWpm = Math.max(bestWpmRecord?.netWpm || 0, medalProfile.bestWpm || 0);
+    const avgWpm =
+      typingOnly.length > 0
+        ? Math.round(typingOnly.reduce((sum, s) => sum + (Number(s.netWpm) || 0), 0) / typingOnly.length)
+        : bestWpm;
+    const bestAccuracy = Math.max(
+      typingOnly.length > 0 ? Math.max(...typingOnly.map(s => Number(s.accuracy) || 0)) : 0,
+      medalProfile.bestAccuracy || 0
+    );
+    const avgAccuracy =
+      typingOnly.length > 0
+        ? Math.round(typingOnly.reduce((sum, s) => sum + (Number(s.accuracy) || 0), 0) / typingOnly.length)
+        : bestAccuracy;
+
+    const topOverallRecord =
+      ownedScores.length > 0
+        ? [...ownedScores].sort(
+            (a, b) => b.score - a.score || b.netWpm - a.netWpm || b.accuracy - a.accuracy
+          )[0]
+        : null;
+    const bestOverallScore = Math.max(topOverallRecord?.score || 0, medalProfile.bestScore || 0);
+    const bestOverallCategory = topOverallRecord
+      ? topOverallRecord.gameMode === 'ranked' || topOverallRecord.testType === 'RANKED'
+        ? 'ประลองจัดอันดับ'
+        : topOverallRecord.gameMode === 'game'
+        ? `เกมด่านที่ ${topOverallRecord.levelId}`
+        : topOverallRecord.gameMode === 'posttest' || topOverallRecord.testType === 'POST_TEST'
+        ? 'Post-Test'
+        : topOverallRecord.gameMode === 'pretest' || topOverallRecord.testType === 'PRE_TEST'
+        ? 'Pre-Test'
+        : 'ฝึกพิมพ์บทเรียน'
+      : '-';
+
+    const latestAvatarFromScores = ownedScores.find(s => isValidAvatarData(s.avatar));
+    const resolvedAvatar = isValidAvatarData(u.avatar)
+      ? u.avatar!
+      : latestAvatarFromScores?.avatar || '';
+    const resolvedAvatarBg =
+      u.avatarBg || latestAvatarFromScores?.avatarBg || 'from-cyan-500 to-blue-600';
+
+    const resolvedClassroom =
+      u.classroom && u.classroom !== 'ทั่วไป'
+        ? u.classroom
+        : medalProfile.classroom && medalProfile.classroom !== 'ทั่วไป'
+        ? medalProfile.classroom
+        : prePostComparison.classroom && prePostComparison.classroom !== 'ทั่วไป'
+        ? prePostComparison.classroom
+        : ownedScores.find(s => s.classroom && s.classroom !== 'ทั่วไป')?.classroom ||
+          u.classroom ||
+          'ทั่วไป';
+
+    const lastActiveAt =
+      ownedScores[0]?.createdAt || prePostComparison.updatedAt || medalProfile.updatedAt || null;
+
+    return {
+      playerKey,
+      uid: u.uid,
+      studentId: u.studentId || '',
+      displayName: u.displayName || u.fullName || u.username || 'ผู้เล่น',
+      fullName: u.fullName || u.displayName || u.username || 'ผู้เล่น',
+      classroom: resolvedClassroom,
+      avatar: resolvedAvatar,
+      avatarBg: resolvedAvatarBg,
+      allScores: ownedScores,
+      medalProfile,
+      prePostComparison,
+      totalPlayed: ownedScores.length,
+      bestOverallScore,
+      bestOverallCategory,
+      bestRankedScore: bestRankedRecord?.score || 0,
+      bestRankedRecord,
+      bestGameScore,
+      totalGameLevelsScore,
+      passedLevelsCount: medalProfile.passedLevels.length,
+      bestWpm,
+      bestWpmRecord,
+      avgWpm,
+      bestAccuracy,
+      avgAccuracy,
+      bestLessonRecord,
+      totalMedalsCount: medalProfile.totalMedalsCount,
+      completionPercent: medalProfile.completionPercent,
+      isGrandComplete: medalProfile.isGrandComplete,
+      lastActiveAt
+    };
+  });
+
+  return {
+    scores: snapshot.scores,
+    players,
+    syncedFromSheet: snapshot.syncedFromSheet,
+    syncedAt: snapshot.syncedAt
   };
 }
