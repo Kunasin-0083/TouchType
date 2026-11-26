@@ -48,6 +48,7 @@ import {
   clearStudentScores,
   apiTeacherUpdateUserPassword,
   apiTeacherDeleteUser,
+  extractStudentIdFromUid,
   isRecordOwnedByUser,
   subscribeUserDataUpdates
 } from '../utils/googleSheets';
@@ -123,6 +124,7 @@ function formatRelativeTime(iso: string | null): string {
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
   const { isDark } = useTheme();
   const [viewMode, setViewMode] = useState<DashboardView>('students');
+  const [studentListLayout, setStudentListLayout] = useState<'all_list' | 'by_room'>('all_list');
   const [selectedClassroom, setSelectedClassroom] = useState<string>('all');
   const [completionFilter, setCompletionFilter] = useState<CompletionFilter>('all');
   const [prePostFilter, setPrePostFilter] = useState<PrePostFilter>('all');
@@ -136,6 +138,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [syncNoticeNeedsScript, setSyncNoticeNeedsScript] = useState(false);
+  const [scriptNeedsUpdate, setScriptNeedsUpdate] = useState(false);
+  const [dataSourceMode, setDataSourceMode] = useState<'full_sheet' | 'leaderboard_fallback' | 'local_only'>('local_only');
   const syncNoticeTimerRef = useRef<number | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
@@ -205,27 +209,36 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
       setRemoteScores(snapshot.scores);
       setRemoteMedalProfiles(snapshot.medalProfiles);
       setRemotePrePostComparisons(snapshot.prePostComparisons || []);
+      setScriptNeedsUpdate(Boolean(snapshot.needsScriptUpdate));
+      setDataSourceMode(snapshot.dataSourceMode || 'local_only');
       setLastSyncedAt(snapshot.syncedAt);
       setRefreshTick(t => t + 1);
 
       if (showFeedback) {
-        setSyncNotice(
-          snapshot.syncedFromSheet
-            ? 'อัปเดตข้อมูลนักเรียนทุกห้องและสถิติล่าสุดจาก Google Sheets เรียบร้อยแล้ว'
-            : 'อัปเดตข้อมูลล่าสุดในเครื่องเรียบร้อยแล้ว'
-        );
-        setTimeout(() => setSyncNotice(null), 3500);
+        if (snapshot.needsScriptUpdate) {
+          showSyncNotice(
+            'Apps Script บน Google Sheet ยังเป็นเวอร์ชันเก่า (ดึงได้เฉพาะนักเรียนที่มีคะแนนบน Leaderboard) กรุณาอัปเดตโค้ด Apps Script เพื่อดึงรายชื่อนักเรียนทุกคนจากชีต Users',
+            true
+          );
+        } else {
+          showSyncNotice(
+            snapshot.syncedFromSheet
+              ? `อัปเดตข้อมูลนักเรียนทุกคน (${snapshot.users.filter(u => u.role !== 'teacher' && u.role !== 'admin').length} คน) และสถิติล่าสุดจาก Google Sheets เรียบร้อยแล้ว`
+              : 'อัปเดตข้อมูลล่าสุดในเครื่องเรียบร้อยแล้ว',
+            false,
+            3500
+          );
+        }
       }
     } catch {
       if (showFeedback) {
-        setSyncNotice('ไม่สามารถเชื่อมต่อ Google Sheets ได้ในขณะนี้ (แสดงข้อมูลล่าสุดในเครื่อง)');
-        setTimeout(() => setSyncNotice(null), 3500);
+        showSyncNotice('ไม่สามารถเชื่อมต่อ Google Sheets ได้ในขณะนี้ (แสดงข้อมูลล่าสุดในเครื่อง)', false, 3500);
       }
     } finally {
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, []);
+  }, [showSyncNotice]);
 
   // 1. Sync immediately on mount + listen for instant realtime local/cross-tab updates
   useEffect(() => {
@@ -475,13 +488,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
       }
     });
 
-    // Include students discovered in Scores
+    // Include students discovered in Scores (preserving full usr_* UIDs so accounts never collide)
     allRealScores.forEach(s => {
       if (!s.uid || s.uid === 'guest' || s.uid === 'guest_default') return;
       if (s.uid.startsWith('teacher_')) return;
       const alreadyExists = Array.from(rosterMap.values()).some(u => isRecordOwnedByUser(s, u));
       if (!alreadyExists) {
-        const cleanSid = s.uid.replace(/^std_/, '').split('_')[0];
+        const cleanSid = extractStudentIdFromUid(s.uid);
         const key = cleanSid.toLowerCase();
         const savedVaultRoom = getSavedClassroomForUser({
           uid: s.uid,
@@ -1612,6 +1625,54 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
           </div>
         </div>
 
+        {scriptNeedsUpdate && (
+          <div
+            className={`mt-3 p-3.5 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+              isDark
+                ? 'bg-amber-950/35 border-amber-500/40 text-amber-200'
+                : 'bg-amber-50 border-amber-300 text-amber-950'
+            }`}
+          >
+            <div className="flex items-start gap-2.5 text-xs">
+              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold">
+                  ต้องการอัปเดต Google Apps Script (1 ครั้ง) เพื่อดึงรายชื่อนักเรียนทุกคนจากชีต Users
+                </div>
+                <p className={`mt-0.5 text-[11px] ${isDark ? 'text-amber-200/80' : 'text-amber-900/80'}`}>
+                  ตอนนี้ Apps Script ที่เปิดใช้อยู่ยังเป็นเวอร์ชันเก่า (ดึงได้เฉพาะนักเรียนที่มีคะแนนติด Leaderboard + ประวัติรายบุคคลของกลุ่มนั้น) เมื่ออัปเดตและ Deploy โค้ดล่าสุด ระบบจะแสดงรายชื่อนักเรียนทุกคนจากชีต <strong>Users</strong>, <strong>Scores</strong>, <strong>UserMedals</strong> และ <strong>PrePostTests</strong> ครบ 100% ทันที
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(APPS_SCRIPT_CODE_TEMPLATE);
+                    setCopiedScript(true);
+                    setTimeout(() => setCopiedScript(false), 2500);
+                  } catch {
+                    // fallback open modal
+                  }
+                  setIsSheetModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-sm transition-colors"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>คัดลอกโค้ด &amp; ดูวิธีอัปเดต</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!scriptNeedsUpdate && dataSourceMode === 'full_sheet' && (
+          <div className={`mt-3 px-3.5 py-2 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-2 ${isDark ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+            <span>เชื่อมต่อ Google Sheet ครบทุกชีตแล้ว (Users · Scores · UserMedals · PrePostTests) — แสดงข้อมูลนักเรียนทุกคน {studentSummaries.length} คน</span>
+          </div>
+        )}
+
         {syncNotice && (
           <div
             className={`mt-3 px-4 py-2.5 rounded-xl border text-xs font-medium flex flex-wrap items-center justify-between gap-2 ${
@@ -1940,13 +2001,43 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
                 <option value="not_started">ยังไม่เริ่มเรียน</option>
               </select>
             )}
+            {viewMode === 'students' && selectedClassroom === 'all' && (
+              <div
+                className={`inline-flex p-0.5 rounded-xl border text-xs ${
+                  isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-100 border-slate-300'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setStudentListLayout('all_list')}
+                  className={`px-2.5 py-1.5 rounded-lg font-semibold transition-colors ${
+                    studentListLayout === 'all_list'
+                      ? 'bg-cyan-600 text-white'
+                      : mutedTextClass
+                  }`}
+                >
+                  รวมทุกคน ({filteredStudents.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStudentListLayout('by_room')}
+                  className={`px-2.5 py-1.5 rounded-lg font-semibold transition-colors ${
+                    studentListLayout === 'by_room'
+                      ? 'bg-cyan-600 text-white'
+                      : mutedTextClass
+                  }`}
+                >
+                  แยกตามห้อง
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* 6A. VIEW 1: GROUPED BY CLASSROOM (ALL) OR SINGLE CLASSROOM ROSTER */}
+      {/* 6A. VIEW 1: ALL STUDENTS UNIFIED TABLE OR GROUPED BY CLASSROOM */}
       {viewMode === 'students' && (
-        selectedClassroom === 'all' ? (
+        selectedClassroom === 'all' && studentListLayout === 'by_room' ? (
           <div className="space-y-4">
             {groupedFilteredByClassroom.length === 0 ? (
               <div className={`border rounded-2xl p-12 text-center text-sm ${surfaceClass} ${mutedTextClass}`}>
@@ -2059,7 +2150,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
                   {filteredStudents.length === 0 ? (
                     <tr>
                       <td colSpan={6} className={`py-12 text-center text-sm ${mutedTextClass}`}>
-                        ยังไม่มีข้อมูลนักเรียนในห้อง {selectedClassroom}
+                        {selectedClassroom === 'all'
+                          ? 'ไม่พบรายชื่อนักเรียนที่ตรงกับเงื่อนไขการค้นหา'
+                          : `ยังไม่มีข้อมูลนักเรียนในห้อง ${selectedClassroom}`}
                       </td>
                     </tr>
                   ) : (

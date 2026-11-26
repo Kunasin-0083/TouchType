@@ -205,10 +205,12 @@ function doPost(e) {
       if (sMode === 'pretest' || sMode === 'posttest' || sType === 'PRE_TEST' || sType === 'POST_TEST') {
         var isPre = sMode === 'pretest' || sType === 'PRE_TEST';
         var isQuiz = sLevel.indexOf('quiz') !== -1;
+        var rawUidStr = String(data.uid || '').trim();
+        var derivedSid = rawUidStr.indexOf('std_') === 0 ? rawUidStr.replace(/^std_/, '').split('_')[0] : rawUidStr;
         var ppPatch = {
-          accountKey: (scoreStudentId || String(data.uid || '').replace(/^std_/, '').split('_')[0] || '').toLowerCase(),
+          accountKey: (scoreStudentId || derivedSid || '').toLowerCase(),
           uid: data.uid || '',
-          studentId: scoreStudentId || String(data.uid || '').replace(/^std_/, '').split('_')[0] || '',
+          studentId: scoreStudentId || derivedSid || '',
           displayName: data.displayName || '',
           fullName: data.fullName || data.displayName || '',
           classroom: scoreClassroom || 'ทั่วไป',
@@ -1025,8 +1027,8 @@ function doPost(e) {
         var uRowsT = usersSheetT.getDataRange().getValues();
         for (var ut = 1; ut < uRowsT.length; ut++) {
           var urt = uRowsT[ut];
-          if (!urt[0] && !urt[1]) continue;
-          var roleT = String(urt[6] || 'student');
+          if (!urt[0] && !urt[1] && !urt[3] && !urt[8] && !urt[9]) continue;
+          var roleT = String(urt[6] || 'student').trim().toLowerCase() || 'student';
           var avT = String(urt[4] || '');
           var bgT = String(urt[5] || 'from-cyan-500 to-blue-600');
           var roomT = String(urt[10] || 'ทั่วไป').trim() || 'ทั่วไป';
@@ -1044,16 +1046,17 @@ function doPost(e) {
             userRoomMapT['std_' + uKeyT] = { classroom: roomT, ts: uRoomTsT };
           }
           if (roleT !== 'teacher' && roleT !== 'admin') {
+            var fallbackIdT = String(urt[8] || urt[1] || urt[0] || ('row_' + ut)).trim();
             allUsers.push({
-              uid: String(urt[0] || ('std_' + String(urt[1] || '').toLowerCase())),
-              username: String(urt[1] || ''),
-              displayName: String(urt[3] || urt[1] || ''),
+              uid: String(urt[0] || ('std_' + fallbackIdT.toLowerCase())),
+              username: String(urt[1] || fallbackIdT),
+              displayName: String(urt[3] || urt[9] || urt[1] || fallbackIdT),
               avatar: avT,
               avatarBg: bgT,
               role: roleT,
               createdAt: urt[7] || new Date().toISOString(),
-              studentId: String(urt[8] || urt[1] || ''),
-              fullName: String(urt[9] || urt[3] || urt[1] || ''),
+              studentId: String(urt[8] || urt[1] || fallbackIdT),
+              fullName: String(urt[9] || urt[3] || urt[1] || fallbackIdT),
               classroom: roomT,
               classroomUpdatedAt: roomUpdT
             });
@@ -1319,6 +1322,16 @@ function unmarkUserDeletedLocally(target: { uid?: string; username?: string; stu
   }
 }
 
+export function extractStudentIdFromUid(uid?: string): string {
+  const raw = String(uid || '').trim();
+  if (!raw) return '';
+  if (/^std_/i.test(raw)) {
+    return raw.replace(/^std_/i, '').split('_')[0] || raw;
+  }
+  // Preserve full usr_xxxxxxxx or other UIDs intact so distinct accounts never collide
+  return raw;
+}
+
 function isTargetDeleted(
   deletedSet: Set<string>,
   target: { uid?: string; username?: string; studentId?: string; accountKey?: string }
@@ -1336,8 +1349,8 @@ function isTargetDeleted(
     const clean = String(raw || '').trim().toLowerCase();
     if (!clean) continue;
     if (deletedSet.has(clean)) return true;
-    const stripped = clean.replace(/^std_/, '').split('_')[0];
-    if (stripped && deletedSet.has(stripped)) return true;
+    const stripped = extractStudentIdFromUid(clean).toLowerCase();
+    if (stripped && stripped !== clean && deletedSet.has(stripped)) return true;
   }
   return false;
 }
@@ -3935,7 +3948,8 @@ export async function apiTeacherUpdateUserPassword(
   }
 
   const remoteMsg = String(remoteRes.data?.message || remoteRes.error || '').toLowerCase();
-  const needsScriptUpdate = remoteMsg.includes('unknown action');
+  const needsScriptUpdate =
+    remoteMsg.includes('unknown action') || remoteMsg.includes('invalid action');
 
   return {
     success: true,
@@ -4128,7 +4142,8 @@ export async function apiTeacherDeleteUser(
   }
 
   const remoteMsg = String(remoteRes.data?.message || remoteRes.error || '').toLowerCase();
-  const needsScriptUpdate = remoteMsg.includes('unknown action');
+  const needsScriptUpdate =
+    remoteMsg.includes('unknown action') || remoteMsg.includes('invalid action');
 
   return {
     success: true,
@@ -4146,6 +4161,8 @@ export interface TeacherDashboardSnapshot {
   medalProfiles: UserMedalProfile[];
   prePostComparisons: PrePostComparisonRecord[];
   syncedFromSheet: boolean;
+  needsScriptUpdate: boolean;
+  dataSourceMode: 'full_sheet' | 'leaderboard_fallback' | 'local_only';
   syncedAt: string;
 }
 
@@ -4199,15 +4216,17 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
   let remoteMedalProfiles: UserMedalProfile[] = [];
   let remotePrePostComparisons: PrePostComparisonRecord[] = [];
   let syncedFromSheet = false;
+  let needsScriptUpdate = false;
+  let dataSourceMode: 'full_sheet' | 'leaderboard_fallback' | 'local_only' = 'local_only';
 
   try {
-    // 1. Try full teacher data endpoint (Users + Scores + UserMedals + PrePostTests)
+    // 1. Try full teacher data endpoint (ALL Users + ALL Scores + UserMedals + PrePostTests)
     const teacherRes = await sendToAppsScript(
       {
         action: 'getTeacherData',
         sheetId: SHEET_ID
       },
-      7000
+      10000
     );
 
     if (
@@ -4219,6 +4238,7 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
         Array.isArray(teacherRes.data.prePostComparisons))
     ) {
       syncedFromSheet = true;
+      dataSourceMode = 'full_sheet';
       if (Array.isArray(teacherRes.data.users)) {
         remoteUsers = teacherRes.data.users;
       }
@@ -4232,17 +4252,74 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
         remotePrePostComparisons = teacherRes.data.prePostComparisons;
       }
     } else {
-      // 2. Graceful fallback to getLeaderboard so older Apps Script deployments still stream live scores & classroom checkpoints
+      const teacherErrMsg = String(teacherRes.data?.message || teacherRes.error || '').toLowerCase();
+      if (teacherErrMsg.includes('invalid action') || teacherErrMsg.includes('unknown action')) {
+        needsScriptUpdate = true;
+      }
+
+      // 2. Graceful fallback for older Apps Script deployments:
+      //    Fetch getLeaderboard AND pull each discovered student's full score history via getUserScores
+      //    so Pre-Test, Post-Test, 10-Level Game, Lessons & Ranked scores all appear!
       const lbRes = await sendToAppsScript(
         {
           action: 'getLeaderboard',
           sheetId: SHEET_ID
         },
-        6000
+        7000
       );
       if (lbRes.success && lbRes.data && Array.isArray(lbRes.data.scores)) {
         syncedFromSheet = true;
-        remoteScores = lbRes.data.scores;
+        dataSourceMode = 'leaderboard_fallback';
+        const fallbackScoreMap = new Map<string, ScoreRecord>();
+        (lbRes.data.scores as ScoreRecord[]).forEach(sc => {
+          if (sc && sc.scoreId) fallbackScoreMap.set(sc.scoreId, sc);
+        });
+
+        // Collect all unique discovered student UIDs (from leaderboard + local users/medals/prepost)
+        const targetQueries = new Map<string, { uid: string; displayName: string }>();
+        (lbRes.data.scores as ScoreRecord[]).forEach(sc => {
+          const uid = String(sc.uid || '').trim();
+          if (!uid || uid === 'guest' || uid === 'guest_default' || uid.startsWith('seed_') || uid.startsWith('teacher_')) return;
+          if (!targetQueries.has(uid.toLowerCase())) {
+            targetQueries.set(uid.toLowerCase(), { uid, displayName: sc.displayName || '' });
+          }
+        });
+        localUsers.forEach(u => {
+          if (u.role === 'teacher' || u.role === 'admin' || u.username?.toLowerCase() === 'teacher') return;
+          const uid = String(u.uid || '').trim();
+          if (!uid || uid.startsWith('seed_') || uid.startsWith('teacher_')) return;
+          if (!targetQueries.has(uid.toLowerCase())) {
+            targetQueries.set(uid.toLowerCase(), { uid, displayName: u.displayName || '' });
+          }
+        });
+
+        // Fetch full score histories per student in parallel batches of 5 (capped at 25 to keep fast)
+        const queryList = Array.from(targetQueries.values()).slice(0, 25);
+        for (let i = 0; i < queryList.length; i += 5) {
+          const chunk = queryList.slice(i, i + 5);
+          const batchResults = await Promise.all(
+            chunk.map(q =>
+              sendToAppsScript(
+                {
+                  action: 'getUserScores',
+                  sheetId: SHEET_ID,
+                  uid: q.uid,
+                  displayName: q.displayName
+                },
+                5000
+              ).catch(() => ({ success: false, data: null }))
+            )
+          );
+          batchResults.forEach(res => {
+            if (res.success && res.data && Array.isArray(res.data.scores)) {
+              (res.data.scores as ScoreRecord[]).forEach(sc => {
+                if (sc && sc.scoreId) fallbackScoreMap.set(sc.scoreId, sc);
+              });
+            }
+          });
+        }
+
+        remoteScores = Array.from(fallbackScoreMap.values());
       }
     }
   } catch {
@@ -4275,7 +4352,7 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     const room = extractClassroomFromScore(rs);
     if (!room) return;
     const uidRaw = String(rs.uid || '').trim().toLowerCase();
-    const cleanSid = uidRaw.replace(/^std_/, '').split('_')[0];
+    const cleanSid = extractStudentIdFromUid(rs.uid).toLowerCase();
     if (uidRaw) registerRemoteScoreRoom(uidRaw, room, rs.createdAt || '');
     if (cleanSid) registerRemoteScoreRoom(cleanSid, room, rs.createdAt || '');
     if (rs.displayName) registerRemoteScoreRoom(`name:${rs.displayName.trim().toLowerCase()}`, room, rs.createdAt || '');
@@ -4446,7 +4523,7 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
   remoteScores.forEach(rs => {
     if (!rs || !rs.uid || rs.uid === 'guest' || rs.uid === 'guest_default') return;
     if (String(rs.uid).startsWith('seed_') || String(rs.uid).startsWith('teacher_')) return;
-    const cleanSid = String(rs.uid).replace(/^std_/, '').split('_')[0];
+    const cleanSid = extractStudentIdFromUid(rs.uid);
     const key = cleanSid.toLowerCase();
     if (!key || userByKey.has(key)) return;
     const scoreRoom =
@@ -4592,6 +4669,8 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     medalProfiles: Object.values(mergedMedalsMap),
     prePostComparisons: Object.values(mergedPrePostMap),
     syncedFromSheet,
+    needsScriptUpdate,
+    dataSourceMode,
     syncedAt: new Date().toISOString()
   };
 }
@@ -4692,12 +4771,12 @@ export async function apiFetchGlobalLeaderboardData(): Promise<GlobalLeaderboard
     const isGuest = !cleanUid || cleanUid === 'guest' || cleanUid === 'guest_default';
     const key = isGuest
       ? `name:${String(s.displayName || 'ผู้เล่น').trim().toLowerCase()}`
-      : cleanUid.replace(/^std_/, '').split('_')[0].toLowerCase();
+      : extractStudentIdFromUid(cleanUid).toLowerCase();
     if (!key || playerUsersMap.has(key)) return;
     playerUsersMap.set(key, {
       uid: cleanUid || key,
       username: key,
-      studentId: isGuest ? '' : cleanUid.replace(/^std_/, '').split('_')[0],
+      studentId: isGuest ? '' : extractStudentIdFromUid(cleanUid),
       fullName: s.displayName || 'ผู้เล่น',
       displayName: s.displayName || 'ผู้เล่น',
       classroom: s.classroom || 'ทั่วไป',
