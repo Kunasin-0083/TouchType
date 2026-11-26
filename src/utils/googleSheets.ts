@@ -1,7 +1,7 @@
 /**
  * Google Sheets & Apps Script API Integration
  * Sheet ID: 1rpaY_Qh953H6g1FEv3ErGDfOIRy5OMgzHlCbgh_yyhY
- * Web App URL: https://script.google.com/macros/s/AKfycbzc4JSewT2lJ99qNPEKA3Y9tx_z-mizs6xEJ8_CjbaAOCaXD_eDRVDn0pjDdHJ-5MuIEA/exec
+ * Web App URL: https://script.google.com/macros/s/AKfycbzga1CPf2iHIK9fscIuO4J__Dxo-pKgByxp094keIzOGXvBftW8HxHFb3Rqb1X_pvj_yQ/exec
  */
 
 import { EarnedMedalItem, PrePostComparisonRecord, ScoreRecord, User, UserMedalProfile } from '../types';
@@ -15,7 +15,80 @@ import {
 } from './avatarStorage';
 
 export const SHEET_ID = '1rpaY_Qh953H6g1FEv3ErGDfOIRy5OMgzHlCbgh_yyhY';
-export const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzc4JSewT2lJ99qNPEKA3Y9tx_z-mizs6xEJ8_CjbaAOCaXD_eDRVDn0pjDdHJ-5MuIEA/exec';
+const LEGACY_DEPRECATED_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzc4JSewT2lJ99qNPEKA3Y9tx_z-mizs6xEJ8_CjbaAOCaXD_eDRVDn0pjDdHJ-5MuIEA/exec';
+export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzga1CPf2iHIK9fscIuO4J__Dxo-pKgByxp094keIzOGXvBftW8HxHFb3Rqb1X_pvj_yQ/exec';
+export const APPS_SCRIPT_URL = DEFAULT_APPS_SCRIPT_URL;
+const CUSTOM_APPS_SCRIPT_URL_KEY = 'touch_typing_custom_apps_script_url_v1';
+
+export function getActiveAppsScriptUrl(): string {
+  try {
+    const saved = localStorage.getItem(CUSTOM_APPS_SCRIPT_URL_KEY);
+    const cleanSaved = saved ? saved.trim().split('?')[0] : '';
+    if (
+      cleanSaved &&
+      cleanSaved !== LEGACY_DEPRECATED_SCRIPT_URL &&
+      /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/i.test(cleanSaved)
+    ) {
+      return cleanSaved;
+    }
+    if (cleanSaved === LEGACY_DEPRECATED_SCRIPT_URL) {
+      localStorage.removeItem(CUSTOM_APPS_SCRIPT_URL_KEY);
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_APPS_SCRIPT_URL;
+}
+
+export function setCustomAppsScriptUrl(rawUrl: string): { ok: boolean; normalizedUrl?: string; error?: string } {
+  const cleaned = String(rawUrl || '').trim();
+  if (!cleaned) {
+    try {
+      localStorage.removeItem(CUSTOM_APPS_SCRIPT_URL_KEY);
+    } catch {
+      // ignore
+    }
+    return { ok: true, normalizedUrl: DEFAULT_APPS_SCRIPT_URL };
+  }
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec(\?.*)?$/i.test(cleaned)) {
+    return {
+      ok: false,
+      error: 'รูปแบบ URL ไม่ถูกต้อง ต้องขึ้นต้นด้วย https://script.google.com/macros/s/... และลงท้ายด้วย /exec'
+    };
+  }
+  const withoutQuery = cleaned.split('?')[0];
+  try {
+    localStorage.setItem(CUSTOM_APPS_SCRIPT_URL_KEY, withoutQuery);
+  } catch {
+    // ignore
+  }
+  return { ok: true, normalizedUrl: withoutQuery };
+}
+
+export function resetAppsScriptUrl(): string {
+  try {
+    localStorage.removeItem(CUSTOM_APPS_SCRIPT_URL_KEY);
+  } catch {
+    // ignore
+  }
+  return DEFAULT_APPS_SCRIPT_URL;
+}
+
+export const DEMO_SEED_STUDENT_IDS = new Set(['66309010001', '66309010002']);
+
+export function isDemoSeedStudent(u?: { uid?: string; username?: string; studentId?: string } | null): boolean {
+  if (!u) return false;
+  const uid = String(u.uid || '').trim().toLowerCase();
+  const sid = String(u.studentId || '').trim().toLowerCase();
+  const uname = String(u.username || '').trim().toLowerCase();
+  return (
+    uid.startsWith('seed_') ||
+    uid === 'std_66309010001' ||
+    uid === 'std_66309010002' ||
+    DEMO_SEED_STUDENT_IDS.has(sid) ||
+    DEMO_SEED_STUDENT_IDS.has(uname)
+  );
+}
 
 export const CLASSROOM_OPTIONS = [
   'ปวช.3/1',
@@ -27,7 +100,7 @@ export const CLASSROOM_OPTIONS = [
   'ทั่วไป'
 ] as const;
 
-export const APPS_SCRIPT_CODE_TEMPLATE = `/**
+export const APPS_SCRIPT_CODE_TEMPLATE = String.raw`/**
  * Google Apps Script Backend for TouchTyping Game
  * Sheet ID: 1rpaY_Qh953H6g1FEv3ErGDfOIRy5OMgzHlCbgh_yyhY
  */
@@ -49,9 +122,9 @@ function doPost(e) {
   var lock = LockService.getScriptLock();
   lock.tryLock(10000);
   try {
-    var raw = e.postData ? e.postData.contents : '{}';
+    var raw = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
     var data = JSON.parse(raw);
-    var action = data.action;
+    var action = data.action || 'getLeaderboard';
     var ss = SpreadsheetApp.getActiveSpreadsheet();
 
     var SCORE_HEADERS = [
@@ -1018,47 +1091,151 @@ function doPost(e) {
       });
     }
 
+    if (action === 'getUserScores') {
+      var targetUidS = String(data.uid || '').trim().toLowerCase();
+      var targetNameS = String(data.displayName || '').trim().toLowerCase();
+      var foundUserScores = [];
+      var scoresSheetUS = ss.getSheetByName('Scores');
+      if (scoresSheetUS) {
+        var rowsUS = scoresSheetUS.getDataRange().getValues();
+        for (var usi = 1; usi < rowsUS.length; usi++) {
+          var rus = rowsUS[usi];
+          if (!rus[0]) continue;
+          var rUidUS = String(rus[1] || '').trim().toLowerCase();
+          var rNameUS = String(rus[2] || '').trim().toLowerCase();
+          if ((targetUidS && rUidUS === targetUidS) || (!targetUidS && targetNameS && rNameUS === targetNameS)) {
+            foundUserScores.push({
+              scoreId: rus[0],
+              uid: rus[1],
+              displayName: rus[2],
+              classroom: String(rus[20] || '').trim(),
+              avatar: rus[3] || '',
+              avatarBg: rus[4] || 'from-cyan-500 to-blue-600',
+              gameMode: rus[5],
+              testType: rus[6],
+              language: rus[7],
+              levelId: rus[8],
+              levelTitle: rus[5] === 'game' ? 'ด่านที่ ' + rus[8] : String(rus[8] || rus[5]),
+              score: Number(rus[9]) || 0,
+              totalCharacters: Number(rus[10]) || 0,
+              correctCharacters: Number(rus[11]) || 0,
+              incorrectCharacters: Number(rus[12]) || 0,
+              accuracy: Number(rus[13]) || 0,
+              grossWpm: Number(rus[14]) || 0,
+              netWpm: Number(rus[15]) || 0,
+              timeTakenSeconds: Number(rus[16]) || 0,
+              passed: Boolean(rus[17]),
+              rankTier: rus[18] || '',
+              createdAt: rus[19] || new Date().toISOString()
+            });
+          }
+        }
+      }
+      return createJsonResponse({ success: true, scores: foundUserScores });
+    }
+
     if (action === 'getTeacherData') {
+      function findSheetIgnoreCase(names) {
+        var sheets = ss.getSheets();
+        for (var ni = 0; ni < names.length; ni++) {
+          var exact = ss.getSheetByName(names[ni]);
+          if (exact) return exact;
+        }
+        for (var si0 = 0; si0 < sheets.length; si0++) {
+          var sNameLow = String(sheets[si0].getName() || '').trim().toLowerCase();
+          for (var nj = 0; nj < names.length; nj++) {
+            if (sNameLow === String(names[nj]).toLowerCase()) return sheets[si0];
+          }
+        }
+        return null;
+      }
+
+      function findHeaderCol(headerRow, aliases, fallbackIdx) {
+        if (headerRow && headerRow.length > 0) {
+          for (var hi = 0; hi < headerRow.length; hi++) {
+            var hNorm = String(headerRow[hi] || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+            if (!hNorm) continue;
+            for (var ai = 0; ai < aliases.length; ai++) {
+              if (hNorm === aliases[ai]) return hi;
+            }
+          }
+        }
+        return fallbackIdx;
+      }
+
       var allUsers = [];
       var userAvatarMapT = {};
       var userRoomMapT = {};
-      var usersSheetT = ss.getSheetByName('Users');
+      var usersSheetT = findSheetIgnoreCase(['Users', 'User', 'Students', 'ผู้ใช้งาน', 'นักเรียน']);
       if (usersSheetT) {
         var uRowsT = usersSheetT.getDataRange().getValues();
+        var uHeader = uRowsT.length > 0 ? uRowsT[0] : [];
+        var cUid = findHeaderCol(uHeader, ['uid', 'userid', 'id'], 0);
+        var cUser = findHeaderCol(uHeader, ['username', 'user', 'login', 'ชื่อผู้ใช้', 'รหัสผู้ใช้'], 1);
+        var cDisp = findHeaderCol(uHeader, ['displayname', 'nickname', 'name', 'ชื่อที่แสดง', 'ชื่อเล่น'], 3);
+        var cAv = findHeaderCol(uHeader, ['avatar', 'photo', 'image', 'รูปโปรไฟล์'], 4);
+        var cBg = findHeaderCol(uHeader, ['avatarbg', 'bg', 'gradient'], 5);
+        var cRole = findHeaderCol(uHeader, ['role', 'สิทธิ์', 'บทบาท'], 6);
+        var cCreated = findHeaderCol(uHeader, ['createdat', 'created', 'registeredat', 'วันที่สมัคร'], 7);
+        var cSid = findHeaderCol(uHeader, ['studentid', 'รหัสนักเรียน', 'รหัสนักศึกษา'], 8);
+        var cFull = findHeaderCol(uHeader, ['fullname', 'studentname', 'ชื่อนามสกุล', 'ชื่อสกุล', 'ชื่อเต็ม'], 9);
+        var cRoom = findHeaderCol(uHeader, ['classroom', 'room', 'class', 'ห้องเรียน', 'ห้อง', 'ชั้นเรียน'], 10);
+        var cRoomUpd = findHeaderCol(uHeader, ['classroomupdatedat', 'roomupdatedat', 'updatedat'], 11);
+
         for (var ut = 1; ut < uRowsT.length; ut++) {
           var urt = uRowsT[ut];
-          if (!urt[0] && !urt[1] && !urt[3] && !urt[8] && !urt[9]) continue;
-          var roleT = String(urt[6] || 'student').trim().toLowerCase() || 'student';
-          var avT = String(urt[4] || '');
-          var bgT = String(urt[5] || 'from-cyan-500 to-blue-600');
-          var roomT = String(urt[10] || 'ทั่วไป').trim() || 'ทั่วไป';
-          var roomUpdT = String(urt[11] || urt[7] || new Date().toISOString());
+          var rawUidV = String(urt[cUid] !== undefined ? urt[cUid] : '').trim();
+          var rawUserV = String(urt[cUser] !== undefined ? urt[cUser] : '').trim();
+          var rawDispV = String(urt[cDisp] !== undefined ? urt[cDisp] : '').trim();
+          var rawSidV = String(urt[cSid] !== undefined ? urt[cSid] : '').trim();
+          var rawFullV = String(urt[cFull] !== undefined ? urt[cFull] : '').trim();
+          if (!rawUidV && !rawUserV && !rawDispV && !rawSidV && !rawFullV) continue;
+
+          var roleT = String(urt[cRole] !== undefined ? urt[cRole] : 'student').trim().toLowerCase() || 'student';
+          var avT = String(urt[cAv] !== undefined ? urt[cAv] : '');
+          var bgT = String(urt[cBg] !== undefined ? urt[cBg] : '') || 'from-cyan-500 to-blue-600';
+          var roomT = String(urt[cRoom] !== undefined ? urt[cRoom] : '').trim() || 'ทั่วไป';
+          var createdValT = urt[cCreated] ? (urt[cCreated] instanceof Date ? urt[cCreated].toISOString() : String(urt[cCreated])) : new Date().toISOString();
+          var roomUpdRaw = urt[cRoomUpd] ? (urt[cRoomUpd] instanceof Date ? urt[cRoomUpd].toISOString() : String(urt[cRoomUpd])) : createdValT;
+
           if (avT) {
-            if (urt[0]) userAvatarMapT[String(urt[0]).trim().toLowerCase()] = { avatar: avT, avatarBg: bgT };
-            if (urt[3]) userAvatarMapT['name:' + String(urt[3]).trim().toLowerCase()] = { avatar: avT, avatarBg: bgT };
+            if (rawUidV) userAvatarMapT[rawUidV.toLowerCase()] = { avatar: avT, avatarBg: bgT };
+            if (rawUserV) {
+              userAvatarMapT[rawUserV.toLowerCase()] = { avatar: avT, avatarBg: bgT };
+              userAvatarMapT['std_' + rawUserV.toLowerCase()] = { avatar: avT, avatarBg: bgT };
+            }
+            if (rawDispV) userAvatarMapT['name:' + rawDispV.toLowerCase()] = { avatar: avT, avatarBg: bgT };
           }
-          var uRoomTsT = new Date(roomUpdT).getTime();
+          var uRoomTsT = new Date(roomUpdRaw).getTime();
           if (isNaN(uRoomTsT)) uRoomTsT = ut;
-          if (urt[0]) userRoomMapT[String(urt[0]).trim().toLowerCase()] = { classroom: roomT, ts: uRoomTsT };
-          if (urt[1]) {
-            var uKeyT = String(urt[1]).trim().toLowerCase();
+          if (rawUidV) userRoomMapT[rawUidV.toLowerCase()] = { classroom: roomT, ts: uRoomTsT };
+          if (rawUserV) {
+            var uKeyT = rawUserV.toLowerCase();
             userRoomMapT[uKeyT] = { classroom: roomT, ts: uRoomTsT };
             userRoomMapT['std_' + uKeyT] = { classroom: roomT, ts: uRoomTsT };
           }
-          if (roleT !== 'teacher' && roleT !== 'admin') {
-            var fallbackIdT = String(urt[8] || urt[1] || urt[0] || ('row_' + ut)).trim();
+          if (rawSidV) {
+            var sKeyT = rawSidV.toLowerCase();
+            userRoomMapT[sKeyT] = { classroom: roomT, ts: uRoomTsT };
+            userRoomMapT['std_' + sKeyT] = { classroom: roomT, ts: uRoomTsT };
+          }
+
+          if (roleT !== 'teacher' && roleT !== 'admin' && rawUserV.toLowerCase() !== 'teacher' && rawUserV.toLowerCase() !== 'admin') {
+            var fallbackIdT = rawSidV || rawUserV || rawUidV || ('row_' + ut);
+            var resolvedDispT = rawDispV || rawFullV || rawUserV || fallbackIdT;
+            var resolvedFullT = rawFullV || rawDispV || rawUserV || fallbackIdT;
             allUsers.push({
-              uid: String(urt[0] || ('std_' + fallbackIdT.toLowerCase())),
-              username: String(urt[1] || fallbackIdT),
-              displayName: String(urt[3] || urt[9] || urt[1] || fallbackIdT),
+              uid: rawUidV || ('std_' + fallbackIdT.toLowerCase()),
+              username: rawUserV || fallbackIdT,
+              displayName: resolvedDispT,
               avatar: avT,
               avatarBg: bgT,
               role: roleT,
-              createdAt: urt[7] || new Date().toISOString(),
-              studentId: String(urt[8] || urt[1] || fallbackIdT),
-              fullName: String(urt[9] || urt[3] || urt[1] || fallbackIdT),
+              createdAt: createdValT,
+              studentId: rawSidV || rawUserV || fallbackIdT,
+              fullName: resolvedFullT,
               classroom: roomT,
-              classroomUpdatedAt: roomUpdT
+              classroomUpdatedAt: roomUpdRaw
             });
           }
         }
@@ -1245,7 +1422,8 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return doPost({ postData: { contents: JSON.stringify(e.parameter || { action: 'getLeaderboard' }) } });
+  var params = (e && e.parameter && e.parameter.action) ? e.parameter : { action: 'getLeaderboard' };
+  return doPost({ postData: { contents: JSON.stringify(params) } });
 }
 
 function createJsonResponse(obj) {
@@ -1486,6 +1664,7 @@ export function isRecordOwnedByUser(score: ScoreRecord, user: User | null | unde
   }
   if (user.uid === 'guest_default' && sUid === 'guest') return true;
   if (
+    (!sUid || sUid === 'guest') &&
     user.displayName &&
     score.displayName &&
     score.displayName.trim().toLowerCase() === user.displayName.trim().toLowerCase()
@@ -1493,6 +1672,135 @@ export function isRecordOwnedByUser(score: ScoreRecord, user: User | null | unde
     return true;
   }
   return false;
+}
+
+function sanitizeAvatarBg(bg: unknown): string {
+  const s = String(bg || '').trim();
+  return s.includes('from-') ? s : 'from-cyan-500 to-blue-600';
+}
+
+function isClassroomMarkerText(val: string): boolean {
+  const t = val.trim();
+  if (!t) return false;
+  return /^(ปวช\.|ปวส\.|ม\.|ทั่วไป$|ผู้สอน$|ห้อง)/.test(t);
+}
+
+export function normalizeRemoteUserRecord(raw: any): User {
+  const cleanAvatar = isValidAvatarData(raw?.avatar) ? String(raw.avatar) : '';
+  const cleanBg = sanitizeAvatarBg(raw?.avatarBg);
+  const rawUid = String(raw?.uid || '').trim();
+  const rawUsername = String(raw?.username || raw?.studentId || rawUid).trim();
+  const rawSid = String(raw?.studentId || raw?.username || rawUid).trim();
+  const rawDisplay = String(raw?.displayName || raw?.fullName || rawUsername).trim();
+  const rawFull = String(raw?.fullName || raw?.displayName || rawUsername).trim();
+  return {
+    ...raw,
+    uid: rawUid || `std_${rawSid.toLowerCase()}`,
+    username: rawUsername,
+    studentId: rawSid,
+    displayName: rawDisplay,
+    fullName: rawFull,
+    classroom: String(raw?.classroom || 'ทั่วไป').trim() || 'ทั่วไป',
+    role: (raw?.role || 'student') as User['role'],
+    avatar: cleanAvatar,
+    avatarBg: cleanBg,
+    createdAt: raw?.createdAt || new Date().toISOString()
+  };
+}
+
+export function normalizeRemoteScoreRecord(raw: any): ScoreRecord {
+  if (!raw) return raw;
+  const rawMode = String(raw.gameMode ?? '').trim().toLowerCase();
+  const isLegacyShifted = rawMode === 'th' || rawMode === 'en';
+
+  if (!isLegacyShifted) {
+    return {
+      ...raw,
+      avatar: isValidAvatarData(raw.avatar) ? String(raw.avatar) : '',
+      avatarBg: sanitizeAvatarBg(raw.avatarBg),
+      classroom: String(raw.classroom || '').trim()
+    };
+  }
+
+  // Decode legacy 18-column Google Sheet Scores rows (without Avatar/Avatar BG columns)
+  const rawLevel = String(raw.testType ?? '').trim();
+  const rawLevelLow = rawLevel.toLowerCase();
+  const rawLang: 'th' | 'en' = rawMode === 'en' ? 'en' : 'th';
+  const rawScore = Number(raw.language) || 0;
+  const rawTotalChars = Number(raw.levelId) || 0;
+  const rawCorrectChars = Number(raw.score) || 0;
+  const rawIncorrectChars = Number(raw.totalCharacters) || 0;
+  const rawAccuracy = Number(raw.correctCharacters) || 0;
+  const rawGrossWpm = Number(raw.incorrectCharacters) || 0;
+  const rawNetWpm = Number(raw.accuracy) || 0;
+  const rawTimeTaken = Number(raw.grossWpm) || 0;
+  const rawPassed = Boolean(Number(raw.netWpm) > 0 || raw.netWpm === true || String(raw.netWpm).toLowerCase() === 'true');
+
+  let gameMode: ScoreRecord['gameMode'] = 'ranked';
+  let testType: ScoreRecord['testType'] = 'NONE';
+  let levelTitle = rawLevel;
+  let classroom = String(raw.classroom || '').trim();
+
+  if (rawLevelLow === 'profile_avatar') {
+    gameMode = 'profile_avatar' as ScoreRecord['gameMode'];
+    testType = 'AVATAR_UPDATE' as ScoreRecord['testType'];
+  } else if (isClassroomMarkerText(rawLevel)) {
+    gameMode = 'profile_classroom' as ScoreRecord['gameMode'];
+    testType = 'CLASSROOM_UPDATE' as ScoreRecord['testType'];
+    classroom = rawLevel;
+  } else if (rawLevelLow.includes('pretest')) {
+    gameMode = 'pretest';
+    testType = 'PRE_TEST';
+    levelTitle = rawLevelLow.includes('quiz') ? 'แบบทดสอบก่อนเรียน (Pre-Test)' : 'ทดสอบพิมพ์ก่อนเรียน';
+  } else if (rawLevelLow.includes('posttest')) {
+    gameMode = 'posttest';
+    testType = 'POST_TEST';
+    levelTitle = rawLevelLow.includes('quiz') ? 'แบบทดสอบหลังเรียน (Post-Test)' : 'ทดสอบพิมพ์หลังเรียน';
+  } else if (rawLevelLow.startsWith('ranked')) {
+    gameMode = 'ranked';
+    testType = 'RANKED';
+  } else if (rawLevelLow.startsWith('lesson')) {
+    gameMode = 'lesson';
+    testType = 'NONE';
+  } else if (/^(10|[1-9])$/.test(rawLevel)) {
+    gameMode = 'game';
+    testType = 'NONE';
+    levelTitle = `ด่านที่ ${rawLevel}`;
+  } else {
+    const legacyModeHint = String(raw.avatar || '').trim().toLowerCase();
+    if (['game', 'ranked', 'pretest', 'posttest', 'lesson', 'practice'].includes(legacyModeHint)) {
+      gameMode = legacyModeHint as ScoreRecord['gameMode'];
+    }
+    const legacyTestHint = String(raw.avatarBg || '').trim().toUpperCase();
+    if (['PRE_TEST', 'POST_TEST', 'RANKED', 'NONE'].includes(legacyTestHint)) {
+      testType = legacyTestHint as ScoreRecord['testType'];
+    }
+  }
+
+  return {
+    scoreId: String(raw.scoreId || ''),
+    uid: String(raw.uid || ''),
+    displayName: String(raw.displayName || ''),
+    classroom,
+    avatar: isValidAvatarData(raw.avatar) ? String(raw.avatar) : '',
+    avatarBg: sanitizeAvatarBg(raw.avatarBg),
+    gameMode,
+    testType,
+    language: rawLang,
+    levelId: rawLevel,
+    levelTitle,
+    score: rawScore,
+    totalCharacters: rawTotalChars,
+    correctCharacters: rawCorrectChars,
+    incorrectCharacters: rawIncorrectChars,
+    accuracy: rawAccuracy,
+    grossWpm: rawGrossWpm,
+    netWpm: rawNetWpm,
+    timeTakenSeconds: rawTimeTaken,
+    passed: rawPassed,
+    rankTier: String(raw.rankTier || ''),
+    createdAt: String(raw.createdAt || new Date().toISOString())
+  };
 }
 
 export function notifyUserDataUpdated(accountKey?: string) {
@@ -2606,13 +2914,15 @@ export function clearStudentScores(uid: string, displayName?: string) {
 
 export async function sendToAppsScript(
   payload: Record<string, unknown>,
-  timeoutMs: number = 8000
+  timeoutMs: number = 8000,
+  overrideUrl?: string
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const targetUrl = overrideUrl || getActiveAppsScriptUrl();
 
-    const response = await fetch(APPS_SCRIPT_URL, {
+    const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'text/plain;charset=utf-8'
@@ -2632,6 +2942,55 @@ export async function sendToAppsScript(
     const message = err instanceof Error ? err.message : String(err);
     return { success: false, error: message };
   }
+}
+
+export async function testAppsScriptConnection(urlToTest?: string): Promise<{
+  ok: boolean;
+  hasTeacherData: boolean;
+  usersCount: number;
+  scoresCount: number;
+  message: string;
+}> {
+  const target = (urlToTest || getActiveAppsScriptUrl()).trim().split('?')[0];
+  const res = await sendToAppsScript(
+    {
+      action: 'getTeacherData',
+      sheetId: SHEET_ID
+    },
+    10000,
+    target
+  );
+
+  if (res.success && res.data && Array.isArray(res.data.users)) {
+    const usersCount = res.data.users.length;
+    const scoresCount = Array.isArray(res.data.scores) ? res.data.scores.length : 0;
+    return {
+      ok: true,
+      hasTeacherData: true,
+      usersCount,
+      scoresCount,
+      message: `เชื่อมต่อ Google Sheet สำเร็จ! พบผู้ใช้ในชีต Users ทั้งหมด ${usersCount} คน และประวัติคะแนน ${scoresCount} รายการ`
+    };
+  }
+
+  const rawMsg = String(res.data?.message || res.error || '');
+  if (/invalid action|unknown action/i.test(rawMsg)) {
+    return {
+      ok: false,
+      hasTeacherData: false,
+      usersCount: 0,
+      scoresCount: 0,
+      message: 'URL นี้ยังเป็น Apps Script เวอร์ชันเก่า (ยังไม่รองรับ getTeacherData) กรุณาวางโค้ดล่าสุดแล้วเลือก Deploy → Manage deployments → แก้ไข → New version → Deploy หรือวาง URL ใหม่ที่ได้จากการ Deploy'
+    };
+  }
+
+  return {
+    ok: false,
+    hasTeacherData: false,
+    usersCount: 0,
+    scoresCount: 0,
+    message: `ไม่สามารถเชื่อมต่อ Web App URL นี้ได้ (${rawMsg || 'กรุณาตรวจสอบสิทธิ์ Anyone และลองใหม่'})`
+  };
 }
 
 export interface StudentRegisterPayload {
@@ -2849,7 +3208,12 @@ function buildUserFromSheetLogin(raw: Record<string, any>, fallbackId: string): 
     classroomUpdatedAt: rawRoomUpdatedAt || (rawClassroom ? rawCreatedAt : undefined),
     displayName: rawDisplayName,
     avatar: isValidAvatarData(raw.avatar) ? String(raw.avatar) : '',
-    avatarBg: String(raw.avatarBg || (remoteRole === 'teacher' ? 'from-indigo-500 to-purple-600' : 'from-cyan-500 to-blue-600')),
+    avatarBg:
+      typeof raw.avatarBg === 'string' && raw.avatarBg.includes('from-')
+        ? raw.avatarBg
+        : remoteRole === 'teacher'
+        ? 'from-indigo-500 to-purple-600'
+        : 'from-cyan-500 to-blue-600',
     role: remoteRole,
     createdAt: rawCreatedAt
   };
@@ -3241,7 +3605,7 @@ export async function apiSyncUserAccountData(
   ) {
     syncedFromSheet = true;
     if (Array.isArray(userDataRes.data.scores)) {
-      remoteScores = userDataRes.data.scores;
+      remoteScores = userDataRes.data.scores.map(normalizeRemoteScoreRecord);
     }
     if (userDataRes.data.medalProfile) {
       remoteMedalProfile = userDataRes.data.medalProfile;
@@ -3249,8 +3613,8 @@ export async function apiSyncUserAccountData(
     if (userDataRes.data.prePostComparison) {
       remotePrePostComparison = userDataRes.data.prePostComparison;
     }
-    remoteUserAvatar = String(userDataRes.data.userAvatar || '');
-    remoteUserBg = String(userDataRes.data.userAvatarBg || '');
+    remoteUserAvatar = isValidAvatarData(userDataRes.data.userAvatar) ? String(userDataRes.data.userAvatar) : '';
+    remoteUserBg = sanitizeAvatarBg(userDataRes.data.userAvatarBg);
     remoteUserClassroom = String(userDataRes.data.userClassroom || '').trim();
     remoteUserClassroomUpdatedAt = String(userDataRes.data.userClassroomUpdatedAt || '');
   } else {
@@ -3264,7 +3628,9 @@ export async function apiSyncUserAccountData(
     );
     if (lbRes.success && lbRes.data && Array.isArray(lbRes.data.scores)) {
       syncedFromSheet = true;
-      remoteScores = lbRes.data.scores.filter((s: ScoreRecord) => isRecordOwnedByUser(s, hydratedUser));
+      remoteScores = lbRes.data.scores
+        .map(normalizeRemoteScoreRecord)
+        .filter((s: ScoreRecord) => isRecordOwnedByUser(s, hydratedUser));
     }
   }
 
@@ -3696,7 +4062,9 @@ export async function apiFetchLeaderboard(): Promise<ScoreRecord[]> {
 
     if (res.success && res.data && Array.isArray(res.data.scores)) {
       const localReal = getLocalScores().filter(isRealValidScore);
-      const combined: ScoreRecord[] = res.data.scores.filter(isRealValidScore);
+      const combined: ScoreRecord[] = res.data.scores
+        .map(normalizeRemoteScoreRecord)
+        .filter(isRealValidScore);
       localReal.forEach(l => {
         if (!combined.some(c => c.scoreId === l.scoreId)) {
           combined.push(l);
@@ -4160,6 +4528,8 @@ export interface TeacherDashboardSnapshot {
   scores: ScoreRecord[];
   medalProfiles: UserMedalProfile[];
   prePostComparisons: PrePostComparisonRecord[];
+  sheetUsersCount: number;
+  sheetUserKeys: string[];
   syncedFromSheet: boolean;
   needsScriptUpdate: boolean;
   dataSourceMode: 'full_sheet' | 'leaderboard_fallback' | 'local_only';
@@ -4240,10 +4610,10 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
       syncedFromSheet = true;
       dataSourceMode = 'full_sheet';
       if (Array.isArray(teacherRes.data.users)) {
-        remoteUsers = teacherRes.data.users;
+        remoteUsers = teacherRes.data.users.map(normalizeRemoteUserRecord);
       }
       if (Array.isArray(teacherRes.data.scores)) {
-        remoteScores = teacherRes.data.scores;
+        remoteScores = teacherRes.data.scores.map(normalizeRemoteScoreRecord);
       }
       if (Array.isArray(teacherRes.data.medalProfiles)) {
         remoteMedalProfiles = teacherRes.data.medalProfiles;
@@ -4271,13 +4641,13 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
         syncedFromSheet = true;
         dataSourceMode = 'leaderboard_fallback';
         const fallbackScoreMap = new Map<string, ScoreRecord>();
-        (lbRes.data.scores as ScoreRecord[]).forEach(sc => {
+        (lbRes.data.scores as ScoreRecord[]).map(normalizeRemoteScoreRecord).forEach(sc => {
           if (sc && sc.scoreId) fallbackScoreMap.set(sc.scoreId, sc);
         });
 
         // Collect all unique discovered student UIDs (from leaderboard + local users/medals/prepost)
         const targetQueries = new Map<string, { uid: string; displayName: string }>();
-        (lbRes.data.scores as ScoreRecord[]).forEach(sc => {
+        (lbRes.data.scores as ScoreRecord[]).map(normalizeRemoteScoreRecord).forEach(sc => {
           const uid = String(sc.uid || '').trim();
           if (!uid || uid === 'guest' || uid === 'guest_default' || uid.startsWith('seed_') || uid.startsWith('teacher_')) return;
           if (!targetQueries.has(uid.toLowerCase())) {
@@ -4312,7 +4682,7 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
           );
           batchResults.forEach(res => {
             if (res.success && res.data && Array.isArray(res.data.scores)) {
-              (res.data.scores as ScoreRecord[]).forEach(sc => {
+              (res.data.scores as ScoreRecord[]).map(normalizeRemoteScoreRecord).forEach(sc => {
                 if (sc && sc.scoreId) fallbackScoreMap.set(sc.scoreId, sc);
               });
             }
@@ -4358,20 +4728,37 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     if (rs.displayName) registerRemoteScoreRoom(`name:${rs.displayName.trim().toLowerCase()}`, room, rs.createdAt || '');
   });
 
-  // Merge Users (remote + local + medal profile roster + score classroom checkpoints) using newest timestamp
+  // Merge Users grounded in Google Sheets:
+  // - When dataSourceMode === 'full_sheet', the Google Sheet `Users` tab is authoritative (no demo seed pollution).
+  // - In fallback/offline mode, exclude hardcoded demo seed accounts so only real users appear.
   const userByKey = new Map<string, User>();
   const getNormalizedUserKey = (u: { studentId?: string; username?: string; uid?: string }) =>
     String(u.studentId || u.username || u.uid || '').trim().toLowerCase();
 
+  const localByKey = new Map<string, User>();
   localUsers.forEach(u => {
+    if (isDemoSeedStudent(u)) return;
     const key = getNormalizedUserKey(u);
-    if (key) userByKey.set(key, applyVaultAvatarToUser(u));
+    if (key) localByKey.set(key, applyVaultAvatarToUser(u));
   });
+
+  if (dataSourceMode !== 'full_sheet') {
+    localByKey.forEach((u, key) => {
+      userByKey.set(key, u);
+    });
+  } else {
+    // Always preserve teacher/admin accounts in local cache
+    localByKey.forEach((u, key) => {
+      if (u.role === 'teacher' || u.role === 'admin' || u.username?.toLowerCase() === 'teacher') {
+        userByKey.set(key, u);
+      }
+    });
+  }
 
   remoteUsers.forEach(ru => {
     const key = getNormalizedUserKey(ru);
     if (!key) return;
-    const existing = userByKey.get(key);
+    const existing = userByKey.get(key) || localByKey.get(key);
     const vaultRoom = getSavedClassroomForUser(existing || ru);
     const scoreRoom =
       remoteScoreRoomByKey.get(key) ||
@@ -4383,9 +4770,9 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     }
 
     const newestRoom = pickNewestClassroom(
+      { classroom: ru.classroom, updatedAt: ru.classroomUpdatedAt || ru.createdAt },
       { classroom: existing?.classroom, updatedAt: existing?.classroomUpdatedAt },
       { classroom: vaultRoom?.classroom, updatedAt: vaultRoom?.updatedAt },
-      { classroom: ru.classroom, updatedAt: ru.classroomUpdatedAt || ru.createdAt },
       { classroom: scoreRoom?.classroom, updatedAt: scoreRoom?.updatedAt }
     );
 
@@ -4394,21 +4781,22 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     }
 
     const mergedUser: User = applyVaultAvatarToUser({
-      uid: existing?.uid || ru.uid || `std_${key}`,
-      username: existing?.username || ru.username || key,
-      studentId: existing?.studentId || ru.studentId || ru.username || key,
+      uid: ru.uid || existing?.uid || `std_${key}`,
+      username: ru.username || existing?.username || key,
+      studentId: ru.studentId || ru.username || existing?.studentId || key,
       fullName:
         (ru.fullName && ru.fullName !== ru.username ? ru.fullName : '') ||
-        existing?.fullName ||
         ru.displayName ||
+        existing?.fullName ||
+        ru.username ||
         key,
       classroom: newestRoom.classroom,
       classroomUpdatedAt: newestRoom.updatedAt,
-      displayName: ru.displayName || existing?.displayName || key,
-      role: (existing?.role || ru.role || 'student') as User['role'],
+      displayName: ru.displayName || ru.fullName || existing?.displayName || ru.username || key,
+      role: (ru.role || existing?.role || 'student') as User['role'],
       avatar: isValidAvatarData(ru.avatar) ? ru.avatar : existing?.avatar || '',
       avatarBg: ru.avatarBg || existing?.avatarBg || 'from-cyan-500 to-blue-600',
-      createdAt: existing?.createdAt || ru.createdAt || new Date().toISOString()
+      createdAt: ru.createdAt || existing?.createdAt || new Date().toISOString()
     });
     userByKey.set(key, mergedUser);
   });
@@ -4526,6 +4914,9 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     const cleanSid = extractStudentIdFromUid(rs.uid);
     const key = cleanSid.toLowerCase();
     if (!key || userByKey.has(key)) return;
+    // Prevent duplicate ghost row if this score already belongs to a user from Google Sheet Users
+    const alreadyOwned = Array.from(userByKey.values()).some(u => isRecordOwnedByUser(rs, u));
+    if (alreadyOwned) return;
     const scoreRoom =
       remoteScoreRoomByKey.get(key) ||
       remoteScoreRoomByKey.get(String(rs.uid).trim().toLowerCase()) ||
@@ -4663,11 +5054,17 @@ export async function apiFetchTeacherDashboardData(): Promise<TeacherDashboardSn
     }
   }
 
+  const sheetUserKeys = remoteUsers
+    .map(u => getNormalizedUserKey(u))
+    .filter(Boolean);
+
   return {
     users: Array.from(userByKey.values()),
     scores: enrichedScores,
     medalProfiles: Object.values(mergedMedalsMap),
     prePostComparisons: Object.values(mergedPrePostMap),
+    sheetUsersCount: remoteUsers.length,
+    sheetUserKeys,
     syncedFromSheet,
     needsScriptUpdate,
     dataSourceMode,

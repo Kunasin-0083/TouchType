@@ -12,7 +12,7 @@
 
 ## 2. การเชื่อมต่อ Google Sheets & Google Apps Script
 - **Google Sheet ID:** `1rpaY_Qh953H6g1FEv3ErGDfOIRy5OMgzHlCbgh_yyhY`
-- **Google Apps Script Web App URL:** `https://script.google.com/macros/s/AKfycbzc4JSewT2lJ99qNPEKA3Y9tx_z-mizs6xEJ8_CjbaAOCaXD_eDRVDn0pjDdHJ-5MuIEA/exec`
+- **Google Apps Script Web App URL:** `https://script.google.com/macros/s/AKfycbzga1CPf2iHIK9fscIuO4J__Dxo-pKgByxp094keIzOGXvBftW8HxHFb3Rqb1X_pvj_yQ/exec`
 
 ### โครงสร้างตารางใน Google Sheets:
 1. **ชีท Users (ข้อมูลผู้ใช้งาน)**

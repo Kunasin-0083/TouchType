@@ -31,12 +31,18 @@ import {
   EyeOff,
   UserX,
   AlertTriangle,
-  ShieldCheck
+  ShieldCheck,
+  Link2
 } from 'lucide-react';
 import { PrePostComparisonRecord, ScoreRecord, User, UserMedalProfile } from '../types';
 import {
   APPS_SCRIPT_CODE_TEMPLATE,
   SHEET_ID,
+  getActiveAppsScriptUrl,
+  setCustomAppsScriptUrl,
+  resetAppsScriptUrl,
+  testAppsScriptConnection,
+  isDemoSeedStudent,
   getLocalUsers,
   getLocalScores,
   getAllSavedUserMedalProfiles,
@@ -68,10 +74,13 @@ type SortField = 'name' | 'completion' | 'wpm' | 'accuracy' | 'growth' | 'recent
 
 interface StudentSummary {
   uid: string;
+  username: string;
   studentId: string;
   fullName: string;
   displayName: string;
   classroom: string;
+  createdAt: string | null;
+  fromSheetUsers: boolean;
   avatar: string;
   avatarBg: string;
   scores: ScoreRecord[];
@@ -140,8 +149,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
   const [syncNoticeNeedsScript, setSyncNoticeNeedsScript] = useState(false);
   const [scriptNeedsUpdate, setScriptNeedsUpdate] = useState(false);
   const [dataSourceMode, setDataSourceMode] = useState<'full_sheet' | 'leaderboard_fallback' | 'local_only'>('local_only');
+  const [sheetUsersCount, setSheetUsersCount] = useState(0);
+  const [sheetUserKeySet, setSheetUserKeySet] = useState<Set<string>>(() => new Set());
   const syncNoticeTimerRef = useRef<number | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+
+  // Google Apps Script Web App URL connection state
+  const [scriptUrlInput, setScriptUrlInput] = useState<string>(() => getActiveAppsScriptUrl());
+  const [isTestingScriptUrl, setIsTestingScriptUrl] = useState(false);
+  const [scriptUrlTestFeedback, setScriptUrlTestFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   // Remote snapshots merged from Google Sheets
   const [remoteUsers, setRemoteUsers] = useState<User[]>([]);
@@ -211,19 +227,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
       setRemotePrePostComparisons(snapshot.prePostComparisons || []);
       setScriptNeedsUpdate(Boolean(snapshot.needsScriptUpdate));
       setDataSourceMode(snapshot.dataSourceMode || 'local_only');
+      setSheetUsersCount(snapshot.sheetUsersCount || 0);
+      setSheetUserKeySet(new Set(snapshot.sheetUserKeys || []));
       setLastSyncedAt(snapshot.syncedAt);
       setRefreshTick(t => t + 1);
 
       if (showFeedback) {
         if (snapshot.needsScriptUpdate) {
           showSyncNotice(
-            'Apps Script บน Google Sheet ยังเป็นเวอร์ชันเก่า (ดึงได้เฉพาะนักเรียนที่มีคะแนนบน Leaderboard) กรุณาอัปเดตโค้ด Apps Script เพื่อดึงรายชื่อนักเรียนทุกคนจากชีต Users',
+            'Apps Script URL ปัจจุบันยังเป็นเวอร์ชันเก่า (ยังไม่รองรับดึงชีต Users) กรุณาอัปเดต Deploy เป็น New version หรือวาง Web App URL ใหม่ที่ช่องตั้งค่า Google Sheet',
             true
           );
         } else {
           showSyncNotice(
             snapshot.syncedFromSheet
-              ? `อัปเดตข้อมูลนักเรียนทุกคน (${snapshot.users.filter(u => u.role !== 'teacher' && u.role !== 'admin').length} คน) และสถิติล่าสุดจาก Google Sheets เรียบร้อยแล้ว`
+              ? `ซิงค์ข้อมูลผู้ใช้จาก Google Sheet (ชีต Users ${snapshot.sheetUsersCount || 0} คน) และสถิติทั้งหมดเรียบร้อยแล้ว`
               : 'อัปเดตข้อมูลล่าสุดในเครื่องเรียบร้อยแล้ว',
             false,
             3500
@@ -239,6 +257,33 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
       setIsSyncing(false);
     }
   }, [showSyncNotice]);
+
+  const handleSaveAndTestScriptUrl = useCallback(async () => {
+    const saved = setCustomAppsScriptUrl(scriptUrlInput);
+    if (!saved.ok || !saved.normalizedUrl) {
+      setScriptUrlTestFeedback({ ok: false, message: saved.error || 'รูปแบบ Web App URL ไม่ถูกต้อง' });
+      return;
+    }
+    setScriptUrlInput(saved.normalizedUrl);
+    setIsTestingScriptUrl(true);
+    setScriptUrlTestFeedback(null);
+    try {
+      const testRes = await testAppsScriptConnection(saved.normalizedUrl);
+      setScriptUrlTestFeedback({ ok: testRes.ok, message: testRes.message });
+      if (testRes.ok) {
+        await syncTeacherData(true);
+      }
+    } finally {
+      setIsTestingScriptUrl(false);
+    }
+  }, [scriptUrlInput, syncTeacherData]);
+
+  const handleResetScriptUrl = useCallback(async () => {
+    const defUrl = resetAppsScriptUrl();
+    setScriptUrlInput(defUrl);
+    setScriptUrlTestFeedback(null);
+    await syncTeacherData(true);
+  }, [syncTeacherData]);
 
   // 1. Sync immediately on mount + listen for instant realtime local/cross-tab updates
   useEffect(() => {
@@ -276,20 +321,27 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
     return () => window.clearInterval(intervalId);
   }, [autoSyncEnabled, syncTeacherData]);
 
-  // Merge local + remote users using newest classroom timestamp so student profile room edits reflect immediately
+  // Ground user roster in Google Sheet `Users` (never mixing hardcoded demo seed accounts)
   const allMergedUsers = useMemo(() => {
-    const local = getLocalUsers();
+    const local = getLocalUsers().filter(u => !isDemoSeedStudent(u));
     const map = new Map<string, User>();
     const getKey = (u: User) => String(u.studentId || u.username || u.uid || '').trim().toLowerCase();
 
+    const localByKey = new Map<string, User>();
     local.forEach(u => {
       const k = getKey(u);
-      if (k) map.set(k, u);
+      if (k) localByKey.set(k, u);
     });
+
+    // In fallback/offline mode include real local users; when full_sheet is active, Google Sheet Users is authoritative
+    if (dataSourceMode !== 'full_sheet') {
+      localByKey.forEach((u, k) => map.set(k, u));
+    }
+
     remoteUsers.forEach(ru => {
       const k = getKey(ru);
       if (!k) return;
-      const existing = map.get(k);
+      const existing = map.get(k) || localByKey.get(k);
       if (!existing) {
         map.set(k, ru);
       } else {
@@ -305,32 +357,34 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
           ? new Date(ru.createdAt).getTime()
           : 0;
 
-        let resolvedRoom = existing.classroom || ru.classroom || 'ทั่วไป';
-        let resolvedRoomAt = existing.classroomUpdatedAt || ru.classroomUpdatedAt;
+        let resolvedRoom = ru.classroom || existing.classroom || 'ทั่วไป';
+        let resolvedRoomAt = ru.classroomUpdatedAt || existing.classroomUpdatedAt;
 
-        if (ru.classroom && remoteTs > existingTs) {
+        if (ru.classroom && remoteTs >= existingTs) {
           resolvedRoom = ru.classroom;
           resolvedRoomAt = ru.classroomUpdatedAt || ru.createdAt;
-        } else if (existing.classroom && existingTs >= remoteTs && existingTs > 0) {
+        } else if (existing.classroom && existingTs > remoteTs && existingTs > 0) {
           resolvedRoom = existing.classroom;
           resolvedRoomAt = existing.classroomUpdatedAt || vault?.updatedAt;
-        } else if ((!existing.classroom || existing.classroom === 'ทั่วไป') && ru.classroom) {
-          resolvedRoom = ru.classroom;
-          resolvedRoomAt = ru.classroomUpdatedAt || ru.createdAt;
+        } else if ((!ru.classroom || ru.classroom === 'ทั่วไป') && existing.classroom) {
+          resolvedRoom = existing.classroom;
+          resolvedRoomAt = existing.classroomUpdatedAt || vault?.updatedAt;
         }
 
         map.set(k, {
           ...existing,
+          ...ru,
           avatar: ru.avatar || existing.avatar,
           avatarBg: ru.avatarBg || existing.avatarBg,
           classroom: resolvedRoom,
           classroomUpdatedAt: resolvedRoomAt,
-          fullName: existing.fullName || ru.fullName || existing.displayName
+          fullName: ru.fullName || existing.fullName || ru.displayName || existing.displayName,
+          displayName: ru.displayName || existing.displayName || ru.fullName || ru.username
         });
       }
     });
     return Array.from(map.values());
-  }, [remoteUsers, refreshTick]);
+  }, [remoteUsers, dataSourceMode, refreshTick]);
 
   // Merge local + remote medal profiles
   const medalProfileByKey = useMemo(() => {
@@ -639,12 +693,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
         resolvedClassroom = medalProfile.classroom;
       }
 
+      const normalizedStudentKey = String(student.studentId || student.username || student.uid || '').trim().toLowerCase();
       return {
         uid: student.uid,
+        username: student.username || student.studentId || student.uid,
         studentId: student.studentId || student.username,
-        fullName: student.fullName || student.displayName,
-        displayName: student.displayName,
+        fullName: student.fullName || student.displayName || student.username,
+        displayName: student.displayName || student.fullName || student.username,
         classroom: resolvedClassroom,
+        createdAt: student.createdAt || null,
+        fromSheetUsers: sheetUserKeySet.has(normalizedStudentKey),
         avatar: student.avatar || latestAvatarFromScores?.avatar || '',
         avatarBg: student.avatarBg || latestAvatarFromScores?.avatarBg || 'from-cyan-500 to-blue-600',
         scores,
@@ -677,7 +735,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
         chronologicalTyping
       };
     });
-  }, [allMergedUsers, allRealScores, medalProfileByKey, prePostByKey]);
+  }, [allMergedUsers, allRealScores, medalProfileByKey, prePostByKey, sheetUserKeySet]);
 
   // Helper to compute KPI summary for any subset of students
   const computeStats = useCallback((list: StudentSummary[]) => {
@@ -809,7 +867,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
       if (completionFilter === 'not_started' && s.scores.length > 0) return false;
 
       if (q) {
-        const hay = `${s.studentId} ${s.fullName} ${s.displayName} ${s.classroom}`.toLowerCase();
+        const hay = `${s.studentId} ${s.username} ${s.fullName} ${s.displayName} ${s.classroom}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -853,7 +911,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
           return false;
         }
         if (q) {
-          const hay = `${s.studentId} ${s.fullName} ${s.displayName} ${s.classroom}`.toLowerCase();
+          const hay = `${s.studentId} ${s.username} ${s.fullName} ${s.displayName} ${s.classroom}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
@@ -1311,11 +1369,39 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
               size="sm"
             />
             <div className="min-w-0">
-              <div className="font-semibold truncate max-w-[200px]">
-                {student.fullName}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-semibold truncate max-w-[200px]">
+                  {student.fullName}
+                </span>
+                {student.displayName &&
+                  student.displayName.trim() !== student.fullName.trim() && (
+                    <span className={`text-[11px] truncate max-w-[120px] ${mutedTextClass}`}>
+                      ({student.displayName})
+                    </span>
+                  )}
+                {student.fromSheetUsers && (
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${
+                      isDark
+                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    }`}
+                    title="ดึงรายชื่อและข้อมูลโดยตรงจากชีต Users ใน Google Sheet"
+                  >
+                    Sheet
+                  </span>
+                )}
               </div>
-              <div className={`text-[11px] font-mono tabular-nums flex items-center gap-1.5 ${mutedTextClass}`}>
-                <span>{student.studentId}</span>
+              <div className={`text-[11px] font-mono tabular-nums flex items-center gap-1.5 flex-wrap ${mutedTextClass}`}>
+                <span>{student.studentId || student.username}</span>
+                {student.username &&
+                  student.studentId &&
+                  student.username.toLowerCase() !== student.studentId.toLowerCase() && (
+                    <>
+                      <span>·</span>
+                      <span>@{student.username}</span>
+                    </>
+                  )}
                 <span>·</span>
                 <span className="text-cyan-500 font-sans font-semibold">{student.classroom}</span>
               </div>
@@ -1627,49 +1713,95 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
 
         {scriptNeedsUpdate && (
           <div
-            className={`mt-3 p-3.5 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+            className={`mt-3 p-4 rounded-2xl border space-y-3 ${
               isDark
                 ? 'bg-amber-950/35 border-amber-500/40 text-amber-200'
                 : 'bg-amber-50 border-amber-300 text-amber-950'
             }`}
           >
-            <div className="flex items-start gap-2.5 text-xs">
-              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-              <div>
-                <div className="font-bold">
-                  ต้องการอัปเดต Google Apps Script (1 ครั้ง) เพื่อดึงรายชื่อนักเรียนทุกคนจากชีต Users
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 text-xs">
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold">
+                    เชื่อม Google Sheet เพื่อดึงรายชื่อ User ทุกคนจากชีต Users
+                  </div>
+                  <p className={`mt-0.5 text-[11px] ${isDark ? 'text-amber-200/80' : 'text-amber-900/80'}`}>
+                    Web App URL ปัจจุบันยังเป็น Apps Script เวอร์ชันเก่า (จึงยังดึงรายชื่อจากชีต <strong>Users</strong> ไม่ได้) — หากคุณเพิ่งกด <strong>Deploy → New deployment</strong> ให้วาง Web App URL ใหม่ด้านล่าง หรือเลือก <strong>Manage deployments → แก้ไข → New version</strong>
+                  </p>
                 </div>
-                <p className={`mt-0.5 text-[11px] ${isDark ? 'text-amber-200/80' : 'text-amber-900/80'}`}>
-                  ตอนนี้ Apps Script ที่เปิดใช้อยู่ยังเป็นเวอร์ชันเก่า (ดึงได้เฉพาะนักเรียนที่มีคะแนนติด Leaderboard + ประวัติรายบุคคลของกลุ่มนั้น) เมื่ออัปเดตและ Deploy โค้ดล่าสุด ระบบจะแสดงรายชื่อนักเรียนทุกคนจากชีต <strong>Users</strong>, <strong>Scores</strong>, <strong>UserMedals</strong> และ <strong>PrePostTests</strong> ครบ 100% ทันที
-                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(APPS_SCRIPT_CODE_TEMPLATE);
+                      setCopiedScript(true);
+                      setTimeout(() => setCopiedScript(false), 2500);
+                    } catch {
+                      // fallback open modal
+                    }
+                    setIsSheetModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-sm transition-colors"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>ดูโค้ด &amp; วิธี Deploy</span>
+                </button>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <div className="relative flex-1">
+                <Link2 className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 opacity-60" />
+                <input
+                  type="url"
+                  value={scriptUrlInput}
+                  onChange={e => setScriptUrlInput(e.target.value)}
+                  placeholder="วาง Apps Script Web App URL (https://script.google.com/macros/s/.../exec)"
+                  className={`w-full pl-9 pr-3 py-2 rounded-xl border text-xs font-mono focus:outline-none focus:border-cyan-500 ${
+                    isDark
+                      ? 'bg-slate-950 border-slate-700 text-slate-100 placeholder:text-slate-500'
+                      : 'bg-white border-amber-300 text-slate-900 placeholder:text-slate-400'
+                  }`}
+                />
+              </div>
               <button
                 type="button"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(APPS_SCRIPT_CODE_TEMPLATE);
-                    setCopiedScript(true);
-                    setTimeout(() => setCopiedScript(false), 2500);
-                  } catch {
-                    // fallback open modal
-                  }
-                  setIsSheetModalOpen(true);
-                }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-sm transition-colors"
+                disabled={isTestingScriptUrl}
+                onClick={handleSaveAndTestScriptUrl}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs whitespace-nowrap shadow-sm transition-colors disabled:opacity-60"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>คัดลอกโค้ด &amp; ดูวิธีอัปเดต</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${isTestingScriptUrl ? 'animate-spin' : ''}`} />
+                <span>{isTestingScriptUrl ? 'กำลังทดสอบ...' : 'บันทึก URL & ดึงรายชื่อทันที'}</span>
               </button>
             </div>
+
+            {scriptUrlTestFeedback && (
+              <div
+                className={`text-[11px] font-medium px-3 py-2 rounded-xl border ${
+                  scriptUrlTestFeedback.ok
+                    ? isDark
+                      ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                      : 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                    : isDark
+                    ? 'bg-rose-950/50 border-rose-500/40 text-rose-300'
+                    : 'bg-rose-50 border-rose-300 text-rose-800'
+                }`}
+              >
+                {scriptUrlTestFeedback.message}
+              </div>
+            )}
           </div>
         )}
 
         {!scriptNeedsUpdate && dataSourceMode === 'full_sheet' && (
           <div className={`mt-3 px-3.5 py-2 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-2 ${isDark ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-            <span>เชื่อมต่อ Google Sheet ครบทุกชีตแล้ว (Users · Scores · UserMedals · PrePostTests) — แสดงข้อมูลนักเรียนทุกคน {studentSummaries.length} คน</span>
+            <span>
+              อิงรายชื่อจาก Google Sheet ครบทุกชีตแล้ว (ชีต Users {sheetUsersCount} คน · รวมทั้งหมด {studentSummaries.length} คน)
+            </span>
           </div>
         )}
 
@@ -2925,9 +3057,46 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
                   size="lg"
                 />
                 <div>
-                  <h2 className="text-xl font-bold">{selectedStudent.fullName}</h2>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-xl font-bold">{selectedStudent.fullName}</h2>
+                    {selectedStudent.displayName &&
+                      selectedStudent.displayName.trim() !== selectedStudent.fullName.trim() && (
+                        <span className={`text-sm ${mutedTextClass}`}>({selectedStudent.displayName})</span>
+                      )}
+                    {selectedStudent.fromSheetUsers && (
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                          isDark
+                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        }`}
+                      >
+                        Google Sheet
+                      </span>
+                    )}
+                  </div>
                   <div className={`flex flex-wrap items-center gap-2 text-xs mt-1 ${mutedTextClass}`}>
                     <span className="font-mono tabular-nums">รหัส: {selectedStudent.studentId}</span>
+                    {selectedStudent.username &&
+                      selectedStudent.username.toLowerCase() !== selectedStudent.studentId.toLowerCase() && (
+                        <>
+                          <span>·</span>
+                          <span className="font-mono">ผู้ใช้: @{selectedStudent.username}</span>
+                        </>
+                      )}
+                    {selectedStudent.createdAt && (
+                      <>
+                        <span>·</span>
+                        <span>
+                          สมัคร:{' '}
+                          {new Date(selectedStudent.createdAt).toLocaleDateString('th-TH', {
+                            day: 'numeric',
+                            month: 'short',
+                            year: '2-digit'
+                          })}
+                        </span>
+                      </>
+                    )}
                     <span>·</span>
                     <label className="inline-flex items-center gap-1.5">
                       <span>ห้อง:</span>
@@ -3761,13 +3930,61 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = () => {
               </button>
             </div>
 
-            <div className={`mt-4 p-3.5 rounded-2xl border text-xs space-y-1.5 ${isDark ? 'bg-slate-950/60 border-slate-800 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-              <div className="font-bold text-cyan-500">วิธีอัปเดต Google Apps Script เพื่อเปิดใช้งานการเปลี่ยนรหัสผ่านและลบผู้ใช้บน Sheet:</div>
-              <ol className="list-decimal list-inside space-y-1">
-                <li>เปิด Google Sheet ของคุณ → เมนู <strong>ส่วนขยาย (Extensions)</strong> → <strong>Apps Script</strong></li>
-                <li>กดปุ่ม <strong>คัดลอกโค้ด Apps Script</strong> ด้านล่าง แล้ววางแทนโค้ดเดิมในไฟล์ <span className="font-mono">Code.gs</span></li>
-                <li>กด <strong>Deploy → Manage deployments → แก้ไข (ไอคอนดินสอ) → New version → Deploy</strong></li>
-              </ol>
+            <div className={`mt-4 p-3.5 rounded-2xl border text-xs space-y-2.5 ${isDark ? 'bg-slate-950/60 border-slate-800 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
+              <div className="font-bold text-cyan-500">1. ตั้งค่า / เปลี่ยน Web App URL ของ Google Apps Script (กรณี Deploy ใหม่ได้ URL ใหม่):</div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="url"
+                  value={scriptUrlInput}
+                  onChange={e => setScriptUrlInput(e.target.value)}
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  className={`flex-1 px-3 py-2 rounded-xl border text-xs font-mono focus:outline-none focus:border-cyan-500 ${
+                    isDark ? 'bg-slate-900 border-slate-700 text-slate-100' : 'bg-white border-slate-300 text-slate-900'
+                  }`}
+                />
+                <button
+                  type="button"
+                  disabled={isTestingScriptUrl}
+                  onClick={handleSaveAndTestScriptUrl}
+                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold whitespace-nowrap transition-colors disabled:opacity-60"
+                >
+                  {isTestingScriptUrl ? 'กำลังทดสอบ...' : 'ทดสอบ & บันทึก URL'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isTestingScriptUrl}
+                  onClick={handleResetScriptUrl}
+                  className={`px-3 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap transition-colors ${
+                    isDark ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-slate-300 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  ค่าเริ่มต้น
+                </button>
+              </div>
+              {scriptUrlTestFeedback && (
+                <div
+                  className={`text-[11px] font-medium px-3 py-2 rounded-xl border ${
+                    scriptUrlTestFeedback.ok
+                      ? isDark
+                        ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                        : 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                      : isDark
+                      ? 'bg-rose-950/50 border-rose-500/40 text-rose-300'
+                      : 'bg-rose-50 border-rose-300 text-rose-800'
+                  }`}
+                >
+                  {scriptUrlTestFeedback.message}
+                </div>
+              )}
+
+              <div className="pt-1 border-t border-slate-500/15">
+                <div className="font-bold text-cyan-500 mb-1">2. วิธีอัปเดตโค้ดบน Google Apps Script:</div>
+                <ol className="list-decimal list-inside space-y-0.5">
+                  <li>เปิด Google Sheet ของคุณ → เมนู <strong>ส่วนขยาย (Extensions)</strong> → <strong>Apps Script</strong></li>
+                  <li>กดปุ่ม <strong>คัดลอกโค้ด Apps Script</strong> ด้านล่าง แล้ววางแทนโค้ดเดิมในไฟล์ <span className="font-mono">รหัส.gs / Code.gs</span></li>
+                  <li>กด <strong>Deploy → Manage deployments → แก้ไข (ไอคอนดินสอ) → New version → Deploy</strong> (หรือหากกด New deployment ให้คัดลอก Web App URL ใหม่มาวางในช่องด้านบนแล้วกดทดสอบ)</li>
+                </ol>
+              </div>
             </div>
 
             <div className="mt-3 flex-1 min-h-0 overflow-hidden flex flex-col">
